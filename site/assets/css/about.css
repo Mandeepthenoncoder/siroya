@@ -1,0 +1,35 @@
+/* About page only. Chapters without a genuine archive photograph get a
+   typographic panel instead of a stand-in image. */
+.tl-item .frame.tl-type {
+  display: grid; place-content: center; justify-items: center; gap: 10px; text-align: center;
+  background:
+    radial-gradient(90% 80% at 50% 35%, rgba(226, 194, 131, 0.16), transparent 70%),
+    linear-gradient(160deg, #5a1212, #3a0c0c);
+  border: 1px solid rgba(226, 194, 131, 0.28);
+}
+.tl-type .tt-big { font-family: var(--serif); font-size: clamp(1.9rem, 3.2vw, 2.8rem); line-height: 1.1; letter-spacing: 0.03em; color: #F1DDB2; padding: 0 16px; }
+.tl-type .tt-rule { width: 56px; height: 1px; background: linear-gradient(90deg, transparent, var(--gold-2), transparent); }
+.tl-type .tt-place {
+  font-size: 0.74rem; letter-spacing: 0.24em; text-transform: uppercase; font-weight: 500; color: var(--gold-2);
+}
+.tl-item .frame.fit-contain { background: #1a0d0c; }
+.tl-item .frame.fit-contain img { object-fit: contain; }
+.tl-item .tl-year { font-size: clamp(3rem, 5.4vw, 5.2rem); }
+.tl-item > p { max-width: 40ch; }
+.tl-story { display: none; }
+/* Reader: contain wide documents (certificate) and cut-out portraits */
+.sd-media img[src*="guinness-certificate"], .sd-media img[src*="founders"] { object-fit: contain; }
+@media (max-width: 899px) {
+  .tl-item .frame.tl-type { aspect-ratio: 16 / 9; }
+}
+.sd-media.type { display: grid; place-content: center; justify-items: center; gap: 12px; text-align: center;
+  background: radial-gradient(90% 80% at 50% 35%, rgba(226, 194, 131, 0.16), transparent 70%), linear-gradient(160deg, #5a1212, #3a0c0c); }
+.sd-media.type .tt-big { font-size: clamp(2.2rem, 4vw, 3.4rem); }
+@media (max-width: 860px) { .story-dialog .sd-grid:has(.sd-media.type) { grid-template-rows: 22vh 1fr; } }
+.sd-media.type .tt-big { font-family: var(--serif); line-height: 1.1; letter-spacing: 0.03em; color: #F1DDB2; padding: 0 16px; }
+.sd-media.type .tt-rule { width: 56px; height: 1px; background: linear-gradient(90deg, transparent, var(--gold-2), transparent); }
+.sd-media.type .tt-place { font-size: 0.74rem; letter-spacing: 0.24em; text-transform: uppercase; font-weight: 500; color: var(--gold-2); }
+/* Values list: inactive items stay readable; phones show all at full strength */
+.pillar { opacity: 0.5; }
+.pillar.on { opacity: 1; }
+@media (max-width: 960px) { .pillar { opacity: 1; } }

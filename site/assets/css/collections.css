@@ -1,0 +1,107 @@
+/* Collections showcase (collections.html, assets/js/collections-showcase.js) */
+
+/* ---------- Opening + editorial index ---------- */
+.cx-open { padding: clamp(56px, 9vw, 120px) 0 clamp(40px, 6vw, 80px); }
+.cx-open-head { display: grid; gap: 16px; max-width: 760px; margin-bottom: clamp(36px, 5vw, 64px); }
+.cx-open-head h1 { font-size: clamp(2.6rem, 6vw, 5.2rem); line-height: 1.04; }
+.cx-index-wrap { position: relative; }
+.cx-index { display: grid; border-top: 1px solid var(--line); }
+.cx-row {
+  position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 28px; align-items: center; gap: 6px 24px;
+  padding: clamp(16px, 2vw, 24px) 0; border-bottom: 1px solid var(--line); color: var(--ink);
+}
+.cx-row::before { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 1px; background: var(--gold-grad); transform: scaleX(0); transform-origin: left; transition: transform .7s var(--ease); }
+.cx-name { font-family: var(--serif); font-size: clamp(2rem, 5.2vw, 4.4rem); line-height: 1.05; letter-spacing: 0.01em; transition: color .4s var(--ease), transform .6s var(--ease); }
+.cx-kind { grid-column: 1; grid-row: 2; font-size: 0.76rem; letter-spacing: 0.18em; text-transform: uppercase; font-weight: 500; color: var(--ink-2); transition: color .4s var(--ease), transform .6s var(--ease); }
+.cx-row i { grid-column: 2; grid-row: 1 / span 2; }
+.cx-row:hover .cx-kind { color: var(--gold); transform: translateX(10px); }
+.cx-row i { font-size: 1.3rem; color: var(--gold); transition: transform .5s var(--ease); align-self: center; }
+.cx-row:hover::before, .cx-row:focus-visible::before { transform: scaleX(1); }
+.cx-row:hover .cx-name, .cx-row:focus-visible .cx-name { color: var(--red); transform: translateX(10px); }
+.cx-row:hover i { transform: translate(3px, 3px); }
+@media (hover: hover) and (pointer: fine) {
+  .cx-index:hover .cx-row:not(:hover) .cx-name { color: rgba(36, 26, 25, 0.38); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .cx-row { opacity: 0; transform: translateY(22px); transition: opacity .9s ease, transform 1.2s var(--ease); transition-delay: calc(var(--d, 0) * 70ms + .15s); }
+  .cx-index.in .cx-row { opacity: 1; transform: none; }
+}
+/* Floating cover that follows the pointer over the index */
+.cx-preview { position: absolute; left: 0; top: 0; z-index: 3; width: clamp(200px, 19vw, 280px); aspect-ratio: 3 / 4; border-radius: var(--r); overflow: hidden; pointer-events: none; opacity: 0; scale: 0.88; transition: opacity .35s ease, scale .6s var(--ease); box-shadow: 0 30px 60px -30px rgba(36, 26, 25, 0.55); }
+.cx-preview.on { opacity: 1; scale: 1; }
+.cx-preview img { width: 100%; height: 100%; object-fit: cover; }
+
+/* ---------- Full-screen chapters, stacked ---------- */
+.cx-panels { position: relative; }
+.cx-panel { position: sticky; top: 0; z-index: var(--z, 1); height: 100vh; height: 100svh; min-height: 560px; overflow: hidden; color: var(--cream); display: flex; align-items: flex-end; background: var(--ink); }
+.cx-media, .cx-media picture { position: absolute; inset: 0; }
+.cx-media img { width: 100%; height: 100%; object-fit: cover; object-position: 68% center; }
+.cx-media::after { content: ""; position: absolute; inset: 0; background:
+  linear-gradient(90deg, rgba(20, 10, 9, 0.74) 0%, rgba(20, 10, 9, 0.36) 44%, transparent 66%),
+  linear-gradient(180deg, rgba(20, 10, 9, 0.35) 0%, transparent 24%, transparent 52%, rgba(20, 10, 9, 0.78) 100%); }
+/* Light photographs (Evermore's white shirt) stay readable at every width */
+.cx-tag, .cx-title, .cx-short, .cx-count { text-shadow: 0 1px 14px rgba(0, 0, 0, 0.5); }
+.cx-copy { position: relative; z-index: 1; display: grid; gap: 16px; justify-items: start; padding-bottom: clamp(48px, 9vh, 104px); max-width: var(--max); }
+.cx-tag { font-size: 0.76rem; letter-spacing: 0.24em; text-transform: uppercase; font-weight: 500; color: var(--gold-2); }
+.cx-title { font-size: clamp(3rem, 8vw, 7.4rem); line-height: 0.98; letter-spacing: 0.01em; }
+.cx-short { max-width: 44ch; font-size: clamp(1.02rem, 1.3vw, 1.2rem); color: rgba(245, 242, 236, 0.86); }
+.cx-ctas { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 6px; }
+.cx-count { font-size: 0.82rem; color: rgba(245, 242, 236, 0.66); letter-spacing: 0.02em; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .cx-panel .cx-tag, .cx-panel .cx-title, .cx-panel .cx-short, .cx-panel .cx-ctas, .cx-panel .cx-count { opacity: 0; transform: translateY(26px); transition: opacity 1s ease, transform 1.3s var(--ease); }
+  .cx-panel .cx-title { transition-delay: .08s; }
+  .cx-panel .cx-short { transition-delay: .18s; }
+  .cx-panel .cx-ctas { transition-delay: .28s; }
+  .cx-panel .cx-count { transition-delay: .36s; }
+  .cx-panel.in .cx-tag, .cx-panel.in .cx-title, .cx-panel.in .cx-short, .cx-panel.in .cx-ctas, .cx-panel.in .cx-count { opacity: 1; transform: none; }
+  @supports (animation-timeline: view()) {
+    /* the arriving chapter's image settles from a gentle zoom as it slides over the last */
+    .cx-panel .cx-media img { animation: cx-arrive linear both; animation-timeline: view(); animation-range: entry 0% entry 100%; }
+    @keyframes cx-arrive { from { scale: 1.16; translate: 0 -6%; } to { scale: 1; translate: 0 0; } }
+  }
+}
+
+/* ---------- Side guide (desktop) ---------- */
+.cx-guide { position: fixed; right: clamp(16px, 2.2vw, 36px); top: 50%; z-index: 30; transform: translateY(-50%); display: grid; gap: 4px; opacity: 0; visibility: hidden; transition: opacity .5s ease, visibility .5s; }
+.cx-guide.show { opacity: 1; visibility: visible; }
+.cx-guide a { display: flex; align-items: center; justify-content: flex-end; gap: 12px; min-height: 30px; color: rgba(245, 242, 236, 0.6); }
+.cx-g-name { font-family: var(--serif); font-size: 0.86rem; letter-spacing: 0.04em; opacity: 0; transform: translateX(8px); transition: opacity .4s ease, transform .5s var(--ease); white-space: nowrap; text-shadow: 0 1px 12px rgba(0, 0, 0, 0.5); }
+.cx-g-line { width: 18px; height: 1px; background: currentColor; transition: width .5s var(--ease), background-color .4s; }
+.cx-guide a:hover .cx-g-name, .cx-guide a.on .cx-g-name { opacity: 1; transform: none; }
+.cx-guide a.on { color: var(--cream); }
+.cx-guide a.on .cx-g-line { width: 40px; background: var(--gold-2); }
+@media (max-width: 960px) { .cx-guide { display: none; } }
+
+/* ---------- Closing ---------- */
+.cx-close { position: relative; z-index: 20; background: var(--cream); }
+
+/* ---------- Portrait screens (phones, upright tablets): the 3:4 cover ----------
+   The copy block reaches into the photo, so the scrim starts earlier and the
+   gold tag, short line and count carry a deeper shadow */
+@media (max-width: 760px), (max-aspect-ratio: 1/1) {
+  .cx-media img { object-position: center 22%; }
+  .cx-media::after { background: linear-gradient(180deg, rgba(20, 10, 9, 0.35) 0%, transparent 18%, transparent 34%, rgba(20, 10, 9, 0.55) 52%, rgba(20, 10, 9, 0.92) 74%); }
+  .cx-tag, .cx-short, .cx-count { text-shadow: 0 1px 12px rgba(0, 0, 0, 0.55); }
+  .cx-count { color: rgba(245, 242, 236, 0.8); }
+}
+
+/* ---------- Phones ---------- */
+@media (max-width: 760px) {
+  .cx-row { grid-template-columns: minmax(0, 1fr) 22px; gap: 4px 12px; }
+  .cx-name { font-size: clamp(1.9rem, 9vw, 2.6rem); }
+  .cx-kind { grid-column: 1; grid-row: 2; text-align: left; font-size: 0.72rem; }
+  .cx-row i { grid-column: 2; grid-row: 1 / span 2; }
+  .cx-copy { gap: 10px; padding-bottom: calc(48px + env(safe-area-inset-bottom)); }
+  .cx-title { font-size: clamp(2.6rem, 13vw, 3.6rem); }
+  /* Two equal buttons on one row for every collection */
+  .cx-ctas { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+  .cx-ctas .btn { min-width: 0; padding: 0 14px; letter-spacing: 0.08em; }
+  .cx-cta-name { display: none; }
+}
+/* Short screens (phones held sideways): chapters stop stacking, so each
+   one's buttons are always reachable */
+@media (max-height: 600px) {
+  .cx-panel { position: relative; height: auto; min-height: 0; padding-top: calc(var(--nav-h) + 48px); }
+  .cx-copy { padding-bottom: 48px; }
+}

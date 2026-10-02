@@ -1,0 +1,3 @@
+# Runtime database and private config
+data/
+.env

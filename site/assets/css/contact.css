@@ -1,0 +1,150 @@
+/* ==========================================================================
+   Contact page (contact.html). Tokens, buttons, type and the reveal motion
+   come from siroya.css; everything here is prefixed .ct- so it never leaks
+   into other pages.
+   ========================================================================== */
+
+/* ---------- Intro ---------- */
+.ct-intro { padding: clamp(56px, 7.5vw, 112px) 0 clamp(64px, 8vw, 112px); }
+.ct-head { display: grid; justify-items: center; text-align: center; gap: 18px; max-width: 760px; margin: 0 auto clamp(40px, 5vw, 64px); }
+.ct-head .lede { max-width: 44ch; }
+
+/* ---------- Contact cards (WhatsApp, Call, Email) ---------- */
+.ct-actions { display: flex; gap: 16px; }
+.ct-act {
+  position: relative; flex: 1 1 0; min-width: 0;
+  display: flex; flex-direction: column; align-items: flex-start; gap: 28px;
+  padding: clamp(24px, 2.4vw, 34px);
+  border-radius: var(--r); background: var(--white); border: 1px solid var(--line); color: var(--ink);
+  /* Hover lifts with `translate`, so it never fights the reveal's `transform` */
+  transition: opacity 1s var(--ease), transform 1s var(--ease), translate .5s var(--ease), box-shadow .5s var(--ease), border-color .5s var(--ease), background-color .5s var(--ease);
+  transition-delay: calc(var(--i, 0) * 80ms), calc(var(--i, 0) * 80ms), 0s, 0s, 0s, 0s;
+}
+.ct-act[hidden] { display: none; }
+.ct-act:hover { translate: 0 -4px; border-color: rgba(180, 145, 81, 0.55); box-shadow: var(--shadow); }
+.ct-act:active { translate: 0 -1px; }
+.ct-ic {
+  flex: none; display: grid; place-items: center; width: 56px; height: 56px;
+  border-radius: var(--r-sm); background: var(--paper); color: var(--red); font-size: 1.65rem;
+}
+.ct-act-txt { display: grid; gap: 6px; min-width: 0; }
+.ct-act-k { font-family: var(--serif); font-size: clamp(1.4rem, 1.9vw, 1.75rem); line-height: 1.15; letter-spacing: 0.02em; }
+.ct-act-v { font-size: 1.04rem; letter-spacing: 0.02em; overflow-wrap: anywhere; }
+.ct-act-n { font-size: 0.9rem; line-height: 1.5; color: var(--ink-2); max-width: 32ch; }
+.ct-go { position: absolute; top: clamp(24px, 2.4vw, 34px); right: clamp(24px, 2.4vw, 34px); font-size: 1.25rem; color: var(--red); transition: transform .45s var(--ease); }
+.ct-act:hover .ct-go { transform: translate(3px, -3px); }
+
+/* WhatsApp leads: the brand red block */
+.ct-act.is-primary { background: var(--red); border-color: var(--red); color: var(--cream); }
+.ct-act.is-primary:hover { background: var(--wine); border-color: var(--wine); }
+.ct-act.is-primary .ct-ic { background: rgba(245, 242, 236, 0.1); color: var(--gold-2); box-shadow: inset 0 0 0 1px rgba(226, 194, 131, 0.3); }
+.ct-act.is-primary .ct-act-n { color: rgba(245, 242, 236, 0.8); }
+.ct-act.is-primary .ct-go { color: var(--gold-2); }
+
+/* ---------- Stores ---------- */
+.ct-stores-sec { background: var(--paper); }
+.ct-stores-sec .section-head .lede { max-width: 54ch; }
+.ct-stores { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+.ct-stores[aria-busy="true"] { min-height: 560px; }
+.ct-store {
+  display: flex; flex-direction: column; min-width: 0;
+  background: var(--white); border: 1px solid var(--line); border-radius: var(--r); overflow: hidden;
+}
+/* Storefront photos are 4:3; a gentle 16:10 crop keeps the signage in view */
+.ct-store-media { flex: none; border-radius: 0; aspect-ratio: 16 / 10; }
+.ct-store-media img { position: absolute; inset: 0; }
+.ct-store-body { flex: 1 1 auto; display: flex; flex-direction: column; gap: 14px; min-width: 0; padding: clamp(22px, 2.2vw, 32px); }
+.ct-store h3 { font-size: clamp(1.25rem, 1.6vw, 1.5rem); }
+.ct-store-info { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 0.95rem; line-height: 1.55; color: var(--ink-2); }
+.ct-store-info li { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 10px; align-items: start; }
+.ct-store-info li > i { font-size: 1.15rem; color: var(--gold); margin-top: 2px; }
+.ct-store-info li.tel { align-items: center; }
+.ct-store-info li.tel > i { margin-top: 0; }
+.ct-store-info a {
+  justify-self: start; display: inline-flex; align-items: center; min-height: 44px; color: var(--ink);
+  text-decoration: underline; text-decoration-color: rgba(152, 30, 29, 0.35); text-underline-offset: 4px; letter-spacing: 0.02em;
+  transition: color .3s var(--ease), text-decoration-color .3s var(--ease);
+}
+.ct-store-info a:hover { color: var(--red); text-decoration-color: currentColor; }
+.ct-store-acts { margin-top: auto; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr)); gap: 10px; padding-top: 6px; }
+.ct-btn {
+  flex: 1 1 auto; display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: 48px; padding: 0 18px; border-radius: var(--r-sm); border: 1px solid transparent;
+  font-size: 0.74rem; font-weight: 500; letter-spacing: 0.12em; text-transform: uppercase; white-space: nowrap; cursor: pointer;
+  transition: background-color .35s var(--ease), color .35s var(--ease), border-color .35s var(--ease), box-shadow .35s var(--ease);
+}
+.ct-btn i { font-size: 1.15rem; }
+.ct-btn-line { border-color: rgba(36, 26, 25, 0.22); color: var(--ink); }
+.ct-btn-line:hover { background: var(--ink); border-color: var(--ink); color: var(--cream); }
+.ct-btn-red { background: var(--red); color: var(--white); }
+.ct-btn-red:hover { background: var(--wine); box-shadow: var(--shadow); }
+.ct-empty { grid-column: 1 / -1; color: var(--ink-2); }
+.ct-empty a { color: var(--red); text-decoration: underline; text-underline-offset: 3px; }
+
+/* ---------- Wholesale ---------- */
+.ct-trade {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: clamp(20px, 3vw, 40px);
+  padding: clamp(26px, 3.4vw, 44px); border-radius: var(--r); background: var(--white); border: 1px solid var(--line);
+}
+.ct-trade-copy { display: grid; gap: 8px; min-width: 0; }
+.ct-trade-copy h2 { font-size: clamp(1.6rem, 2.4vw, 2.2rem); }
+.ct-trade-copy p { color: var(--ink-2); max-width: 58ch; }
+
+/* ---------- Company information ---------- */
+.ct-company {
+  display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.6fr); gap: clamp(24px, 5vw, 80px);
+  margin-top: clamp(56px, 7vw, 96px); align-items: start;
+}
+.ct-company-head { display: grid; gap: 10px; }
+.ct-company-head h2 { font-size: clamp(1.5rem, 2.2vw, 2rem); }
+.ct-company-head p { color: var(--ink-2); font-size: 0.95rem; }
+.ct-legal { margin: 0; display: grid; border-bottom: 1px solid var(--line); }
+.ct-legal > div { display: grid; grid-template-columns: minmax(150px, 0.75fr) minmax(0, 1.5fr); gap: 8px 32px; padding: 16px 0; border-top: 1px solid var(--line); }
+.ct-legal dt { font-size: 0.72rem; font-weight: 500; letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-2); padding-top: 3px; }
+.ct-legal dd { margin: 0; font-size: 0.98rem; line-height: 1.6; letter-spacing: 0.02em; color: var(--ink); overflow-wrap: anywhere; }
+.ct-legal a { text-decoration: underline; text-decoration-color: rgba(152, 30, 29, 0.3); text-underline-offset: 4px; transition: color .3s var(--ease), text-decoration-color .3s var(--ease); }
+.ct-legal a:hover { color: var(--red); text-decoration-color: currentColor; }
+
+/* ---------- Tablets ---------- */
+@media (max-width: 900px) {
+  .ct-actions { flex-direction: column; gap: 12px; }
+  .ct-act { flex: none; flex-direction: row; align-items: center; gap: 18px; min-height: 96px; padding: 18px 56px 18px 20px; }
+  .ct-act-txt { margin-top: 0; gap: 2px; }
+  .ct-act-n { max-width: none; }
+  .ct-go { top: 50%; right: 20px; margin-top: -0.625rem; }
+  .ct-act:hover .ct-go { transform: translate(3px, -3px); }
+  .ct-company { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+}
+@media (max-width: 760px) {
+  .ct-trade { grid-template-columns: auto minmax(0, 1fr); }
+  .ct-trade-btn { grid-column: 1 / -1; width: 100%; }
+}
+
+/* ---------- Phones ---------- */
+@media (max-width: 640px) {
+  .ct-intro { padding: 44px 0 56px; }
+  .ct-head { gap: 14px; margin-bottom: 32px; }
+  .ct-head h1 { font-size: 2.5rem; }
+  .ct-act { gap: 14px; min-height: 84px; padding: 16px 48px 16px 16px; }
+  .ct-ic { width: 48px; height: 48px; font-size: 1.45rem; }
+  .ct-act-k { font-size: 1.25rem; }
+  .ct-act-v { font-size: 0.98rem; }
+  .ct-act-n { display: none; }
+  .ct-go { right: 16px; }
+
+  .ct-stores { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .ct-stores[aria-busy="true"] { min-height: 900px; }
+  .ct-store-body { padding: 20px 18px 18px; gap: 12px; }
+  .ct-store-acts { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .ct-btn { width: 100%; min-height: 50px; }
+
+  .ct-trade { grid-template-columns: minmax(0, 1fr); gap: 16px; padding: 24px 20px; }
+  .ct-trade > .ct-ic { display: none; }
+  .ct-trade-btn { grid-column: auto; }
+  .ct-company { margin-top: 48px; }
+  .ct-legal > div { grid-template-columns: minmax(0, 1fr); gap: 4px; padding: 14px 0; }
+  .ct-legal dt { padding-top: 0; }
+}
+@media (pointer: coarse) {
+  .ct-legal a { display: inline-flex; align-items: center; min-height: 44px; margin: -10px 0; }
+}

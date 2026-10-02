@@ -1,0 +1,23 @@
+# Secrets and runtime data
+server/.env
+server/data/
+site/uploads/
+*.db
+*.db-wal
+*.db-shm
+
+# Large local archives (kept on this machine, not in git)
+old web assets/
+generated/
+review/
+*.pdf
+
+# Tooling / leftovers
+.claude/
+node_modules/
+.vercel/
+site/admin/*harness*.html
+__pycache__/
+*.log
+.DS_Store
+Thumbs.db

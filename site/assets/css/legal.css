@@ -1,0 +1,232 @@
+/* ==========================================================================
+   Legal pages: privacy-policy, terms-of-service, refund-policy,
+   exchange-policy. Loaded after siroya.css and motion.css.
+   Layout: compact intro band, policies row, then a sticky "On this page"
+   table of contents beside a 72ch text column (a <details> on phones).
+   Behaviour (active TOC link, table edge fades, WhatsApp link): legal.js.
+   ========================================================================== */
+
+.lg { --lg-toc: 244px; --lg-top: calc(var(--nav-h) + 32px); }
+
+/* ---------- Intro band ---------- */
+.lg-intro { padding-top: clamp(36px, 5vw, 64px); text-align: center; }
+.lg-intro > .wrap { display: grid; justify-items: center; gap: 16px; }
+.lg-intro h1 { font-size: clamp(2.05rem, 4.2vw, 3.5rem); line-height: 1.08; max-width: 18ch; }
+.lg-intro .rule-gold { width: 72px; margin-top: 4px; }
+.lg-updated { font-size: 0.86rem; color: var(--ink-2); letter-spacing: 0.02em; }
+
+/* Policies row: the four pages, linked to each other */
+.lg-policies { margin-top: clamp(24px, 3.4vw, 40px); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.lg-policies .wrap { display: flex; justify-content: center; flex-wrap: wrap; gap: 0 clamp(24px, 3.4vw, 52px); }
+.lg-policies a {
+  position: relative; display: inline-flex; align-items: center; min-height: 54px;
+  font-size: 0.74rem; letter-spacing: 0.18em; text-transform: uppercase; font-weight: 700;
+  color: var(--ink-2); transition: color .3s var(--ease);
+}
+.lg-policies a::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--red);
+  transform: scaleX(0); transform-origin: left; transition: transform .45s var(--ease);
+}
+.lg-policies a:hover { color: var(--ink); }
+.lg-policies a:hover::after { transform: scaleX(1); background: var(--gold-grad); }
+.lg-policies a[aria-current="page"] { color: var(--red); }
+.lg-policies a[aria-current="page"]::after { transform: scaleX(1); background: var(--red); }
+
+/* ---------- Two-column layout ---------- */
+.lg-layout {
+  font-size: 1.0625rem; /* sets the ch unit to the body text size */
+  /* 72ch cap; Outfit's wide figures make 72ch about 95 characters, so the
+     measure is also held to 42rem (about 75 characters a line). */
+  display: grid; grid-template-columns: var(--lg-toc) minmax(0, min(72ch, 42rem)); justify-content: center; align-items: start;
+  column-gap: clamp(48px, 6.5vw, 112px);
+  padding-top: clamp(40px, 5vw, 64px); padding-bottom: clamp(64px, 8vw, 112px);
+}
+
+/* Table of contents (desktop: sticky aside) */
+.lg-aside {
+  position: sticky; top: var(--lg-top);
+  max-height: calc(100vh - var(--lg-top) - 24px); overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--line) transparent;
+  padding-bottom: 8px;
+}
+.lg-toc-h { font-size: 0.7rem; letter-spacing: 0.22em; text-transform: uppercase; font-weight: 700; color: var(--red); margin: 0 0 18px; }
+.lg-toc ol { list-style: none; margin: 0; padding: 0; }
+.lg-aside .lg-toc > ol { border-left: 1px solid var(--line); }
+.lg-toc a {
+  position: relative; display: block; padding: 7px 0 7px 20px;
+  font-size: 0.84rem; line-height: 1.45; color: var(--ink-2);
+  transition: color .3s var(--ease);
+}
+.lg-toc a:hover { color: var(--ink); }
+.lg-aside .lg-toc a::before {
+  content: ""; position: absolute; left: -1px; top: 6px; bottom: 6px; width: 2px; border-radius: 2px;
+  background: var(--red); transform: scaleY(0); transition: transform .45s var(--ease);
+}
+.lg-toc a[aria-current="location"] { color: var(--red); }
+.lg-aside .lg-toc a[aria-current="location"]::before { transform: scaleY(1); }
+.lg-toc ol ol a { padding-left: 34px; font-size: 0.8rem; }
+
+/* Table of contents (phones: collapsible, at the top of the text) */
+.lg-toc-m { display: none; }
+
+/* ---------- Text column ---------- */
+.lg-body { min-width: 0; line-height: 1.75; color: var(--ink); }
+.lg-body p, .lg-body ul, .lg-body ol, .lg-body dl, .lg-body address { margin: 0 0 1.15em; }
+.lg-sec a:not(.btn) {
+  color: var(--red); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 0.2em;
+  text-decoration-color: rgba(152, 30, 29, 0.35); transition: text-decoration-color .3s var(--ease);
+}
+.lg-sec a:not(.btn):hover { text-decoration-color: currentColor; }
+.lg-body strong { font-weight: 600; }
+
+/* Sections: contiguous (padding, not margin) so the TOC observer always has
+   exactly one section under its reading line. */
+.lg-sec { padding: clamp(36px, 4.4vw, 56px) 0; scroll-margin-top: var(--nav-h); }
+.lg-body > .lg-toc-m + .lg-sec { padding-top: 0; }
+.lg-sec ~ .lg-sec { border-top: 1px solid var(--line); }
+.lg-sec > :last-child, .lg-sub > :last-child { margin-bottom: 0; }
+
+.lg-sec h2 { font-size: clamp(1.3rem, 1.9vw, 1.62rem); line-height: 1.3; letter-spacing: 0.03em; margin: 0 0 22px; text-wrap: balance; }
+.lg-n { color: var(--red); margin-right: 0.12em; }
+/* Terms of Service: "Section N." sits on its own line above the title */
+.lg-n.lg-n-label { display: block; margin: 0 0 6px; font-size: 0.62em; letter-spacing: 0.12em; }
+.lg-sub { margin-top: clamp(32px, 4vw, 44px); scroll-margin-top: var(--nav-h); }
+.lg-sub h3 { font-size: clamp(1.1rem, 1.5vw, 1.28rem); line-height: 1.35; letter-spacing: 0.03em; margin: 0 0 16px; }
+
+/* Lists: small gold lozenges, hollow for nested lists */
+.lg-body ul { list-style: none; padding: 0; }
+.lg-body ul > li { position: relative; padding-left: 1.5em; margin-bottom: 0.6em; }
+.lg-body ul > li::before {
+  content: ""; position: absolute; left: 0.25em; top: 0.72em; width: 6px; height: 6px;
+  background: var(--gold); transform: rotate(45deg);
+}
+.lg-body ul ul { margin: 0.6em 0 0.2em; }
+.lg-body ul ul > li { margin-bottom: 0.35em; }
+.lg-body ul ul > li::before { background: transparent; border: 1px solid var(--gold); }
+.lg-body ol { padding-left: 1.7em; }
+.lg-body ol > li { padding-left: 0.4em; margin-bottom: 0.75em; }
+.lg-body ol > li::marker { color: var(--red); font-weight: 600; font-variant-numeric: tabular-nums; }
+.lg-defs > li { padding-bottom: 0.6em; border-bottom: 1px solid var(--line); }
+.lg-defs > li:last-child { border-bottom: 0; padding-bottom: 0; }
+
+/* Notice (exchange page) */
+.lg-note {
+  display: flex; gap: 14px; align-items: flex-start;
+  background: var(--paper); border-radius: var(--r); padding: 18px 22px; margin: 0;
+}
+.lg-note i { color: var(--red); font-size: 1.4rem; line-height: 1.75rem; flex: none; }
+.lg-note p { margin: 0; }
+
+/* Contact details */
+.lg-contact { font-style: normal; background: var(--white); border: 1px solid var(--line); border-radius: var(--r); padding: 22px 24px; font-size: 0.97rem; }
+.lg-contact-name { margin: 0 0 12px !important; }
+.lg-contact dl { margin: 0; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px 22px; }
+.lg-contact dl > div { display: contents; }
+.lg-contact dt { font-weight: 600; color: var(--ink); }
+.lg-contact dd { margin: 0; color: var(--ink-2); overflow-wrap: anywhere; }
+
+/* ---------- Tables ---------- */
+.lg-table { margin: 8px 0 28px; }
+.lg-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; }
+.lg-scroll:focus-visible { outline-offset: 4px; }
+.lg-scroll table { width: 100%; min-width: 620px; border-collapse: collapse; font-size: 0.95rem; line-height: 1.6; }
+.lg-scroll thead th {
+  text-align: left; vertical-align: bottom; padding: 0 22px 14px 0;
+  font-family: var(--sans); font-size: 0.7rem; letter-spacing: 0.16em; text-transform: uppercase; font-weight: 700; color: var(--ink-2);
+  border-bottom: 1px solid var(--ink);
+}
+.lg-scroll tbody th, .lg-scroll tbody td { text-align: left; vertical-align: top; padding: 18px 22px 18px 0; border-bottom: 1px solid var(--line); }
+.lg-scroll tbody th { font-family: var(--serif); font-weight: 500; font-size: 1.02rem; line-height: 1.5; letter-spacing: 0.02em; color: var(--ink); width: 28%; }
+.lg-scroll tbody tr:last-child > * { border-bottom: 0; }
+.lg-scroll tbody td p { margin: 0; }
+.lg-scroll tbody td p + p { margin-top: 0.7em; }
+.lg-scroll th:last-child, .lg-scroll td:last-child { padding-right: 0; }
+.lg-scroll td.num { text-align: center; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* Edge fades while there is more table to scroll to (classes from legal.js) */
+.lg-scroll.fade-r { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 64px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 64px), transparent); }
+.lg-scroll.fade-l { -webkit-mask-image: linear-gradient(to left, #000 calc(100% - 48px), transparent); mask-image: linear-gradient(to left, #000 calc(100% - 48px), transparent); }
+.lg-scroll.fade-l.fade-r {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 48px, #000 calc(100% - 64px), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 48px, #000 calc(100% - 64px), transparent);
+}
+.lg-swipe { display: none; align-items: center; gap: 8px; margin: 0 0 12px !important; font-size: 0.72rem; letter-spacing: 0.16em; text-transform: uppercase; font-weight: 700; color: var(--ink-2); }
+.lg-swipe i { font-size: 1rem; color: var(--gold); }
+.lg-table.can-scroll .lg-swipe { display: flex; }
+
+/* ---------- Worked examples (exchange page) ---------- */
+.lg-examples { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; margin: 28px 0 0; }
+.lg-example {
+  background: var(--white); border: 1px solid var(--line); border-radius: var(--r);
+  padding: clamp(20px, 2.2vw, 28px); font-size: 0.95rem; line-height: 1.65;
+}
+.lg-example h4 { font-family: var(--sans); font-size: 0.72rem; line-height: 1.5; letter-spacing: 0.16em; text-transform: uppercase; font-weight: 700; color: var(--red); margin: 0 0 12px; }
+.lg-example p { margin: 0 0 14px; }
+.lg-example > :last-child { margin-bottom: 0; }
+.lg-ctx { color: var(--ink-2); }
+.lg-calc { margin: 0 0 16px !important; }
+.lg-calc > div { display: flex; justify-content: space-between; align-items: baseline; gap: 6px 18px; flex-wrap: wrap; padding: 8px 0; border-bottom: 1px dotted rgba(36, 26, 25, 0.22); }
+.lg-calc dt { color: var(--ink-2); }
+.lg-calc dd { margin: 0 0 0 auto; text-align: right; font-variant-numeric: tabular-nums; color: var(--ink); font-weight: 500; }
+.lg-calc > div.is-total { border-bottom: 0; border-top: 1px solid var(--ink); margin-top: 2px; }
+.lg-calc > div.is-total dt, .lg-calc > div.is-total dd { color: var(--ink); font-weight: 600; }
+.lg-result { background: var(--cream); border-radius: var(--r-sm); padding: 12px 16px; box-shadow: inset 2px 0 0 var(--gold); }
+.lg-result.is-refund { box-shadow: inset 2px 0 0 var(--red); }
+.lg-result + .lg-result { margin-top: -4px; }
+
+/* ---------- Closing panel ---------- */
+.lg-help {
+  margin-top: clamp(40px, 5vw, 64px); padding: clamp(26px, 3.4vw, 40px);
+  background: var(--paper); border-radius: var(--r);
+  display: grid; gap: 22px;
+}
+.lg-help h2 { font-size: clamp(1.35rem, 2vw, 1.75rem); line-height: 1.25; margin: 0 0 8px; }
+.lg-help p { margin: 0; color: var(--ink-2); }
+.lg-help-acts { display: flex; flex-wrap: wrap; gap: 12px; }
+.lg-help-acts .btn { height: 50px; }
+.lg-mail { text-transform: none; letter-spacing: 0.02em; font-size: 0.92rem; }
+
+/* ---------- Tablet and phone ---------- */
+@media (max-width: 900px) {
+  .lg-layout { grid-template-columns: minmax(0, 1fr); padding-top: 28px; }
+  .lg-aside { display: none; }
+  .lg-toc-m {
+    display: block; margin: 0 0 clamp(32px, 6vw, 44px);
+    background: var(--white); border: 1px solid var(--line); border-radius: var(--r);
+  }
+  .lg-toc-m summary {
+    list-style: none; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    min-height: 56px; padding: 0 18px; cursor: pointer; -webkit-tap-highlight-color: transparent;
+    font-size: 0.74rem; letter-spacing: 0.2em; text-transform: uppercase; font-weight: 700; color: var(--red);
+  }
+  .lg-toc-m summary::-webkit-details-marker { display: none; }
+  .lg-toc-m summary i { font-size: 1.1rem; color: var(--ink); transition: transform .35s var(--ease); }
+  .lg-toc-m[open] summary i { transform: rotate(45deg); }
+  .lg-toc-m > ol { margin: 0; padding: 4px 18px 10px; border-top: 1px solid var(--line); }
+  .lg-toc-m li + li { border-top: 1px solid var(--line); }
+  .lg-toc-m a { display: flex; align-items: center; min-height: 46px; padding: 10px 0; font-size: 0.95rem; color: var(--ink); }
+  .lg-toc-m ol ol { border-top: 1px solid var(--line); }
+  .lg-toc-m ol ol a { padding-left: 16px; font-size: 0.9rem; color: var(--ink-2); }
+  .lg-toc-m a[aria-current="location"] { color: var(--red); }
+}
+@media (max-width: 640px) {
+  .lg-layout { font-size: 1rem; }
+  .lg-intro h1 { font-size: clamp(1.9rem, 8.4vw, 2.3rem); }
+  .lg-policies .wrap { display: grid; grid-template-columns: 1fr 1fr; gap: 0; padding-left: 0; padding-right: 0; }
+  .lg-policies a { justify-content: center; text-align: center; min-height: 50px; padding: 8px 10px; font-size: 0.68rem; letter-spacing: 0.12em; line-height: 1.4; }
+  .lg-policies a:nth-child(odd) { border-right: 1px solid var(--line); }
+  .lg-policies a:nth-child(n+3) { border-top: 1px solid var(--line); }
+  .lg-sec h2 { margin-bottom: 18px; }
+  .lg-contact { padding: 18px; }
+  .lg-contact dl { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .lg-contact dl > div + div dt { margin-top: 10px; }
+  .lg-help-acts .btn { width: 100%; }
+}
+
+/* ---------- Print: just the policy text ---------- */
+@media print {
+  .site-header, .site-footer, .wa-float, .lg-policies, .lg-aside, .lg-toc-m, .lg-help, .lg-swipe { display: none !important; }
+  body { background: #fff; }
+  .lg-layout { display: block; padding: 24px 0 0; }
+  .lg-scroll { overflow: visible; -webkit-mask-image: none !important; mask-image: none !important; }
+  .lg-scroll table { min-width: 0; }
+  .lg-example, .lg-contact { break-inside: avoid; }
+}

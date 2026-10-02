@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Siroya Jewellers | Your Family Jewellers in Dubai since 1976</title>
+<meta name="description" content="Siroya Jewellers, the trusted Indian family jeweller in Dubai. Temple, precious stone, diamond and everyday gold collections. Visit our stores or enquire on WhatsApp.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;500;600&family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css">
+<link rel="stylesheet" href="assets/css/siroya.css">
+<link rel="stylesheet" href="assets/css/motion.css">
+<link rel="stylesheet" href="assets/css/intro.css">
+<script>try{if(sessionStorage.getItem("siroya_intro_seen")!=="1"||/[?&]intro=1/.test(location.search))document.documentElement.classList.add("intro-pending")}catch(e){}</script>
+<link rel="icon" href="assets/img/logo/favicon.png">
+<!-- Google Tag Manager / Google Ads tag goes here. dataLayer events:
+     view_item_list, view_item, filter_collection, whatsapp_click, generate_lead -->
+</head>
+<body data-page="home" data-over-hero>
+<script src="assets/js/intro.js"></script>
+<header class="site-header" id="site-header"></header>
+
+<main>
+  <!-- Hero: full-bleed campaign image or muted video -->
+  <section class="hero">
+    <div class="hero-media">
+      <!-- Campaign still. Can be swapped for <video autoplay muted loop playsinline poster="..."> -->
+      <img src="assets/img/home/hero.jpg" alt="A mother fastening a gold temple necklace on her daughter before the wedding" fetchpriority="high">
+    </div>
+    <div class="wrap">
+      <div class="hero-copy">
+        <span class="eyebrow rv" style="color:var(--gold-2)">Jewellers to the world since 1976</span>
+        <h1 class="rv" style="--i:1">Jewellery that feels like home</h1>
+        <p class="lede rv" style="--i:2">Designs curated from across the world, chosen with care for your family's celebrations.</p>
+        <div class="hero-ctas rv" style="--i:3">
+          <a class="btn btn-cream" href="collections.html">Explore collections</a>
+          <a class="btn btn-line" href="about.html">Our story</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Collections rail (Zoya-style) -->
+  <section class="pad" data-rail>
+    <div class="wrap rail-head">
+      <div class="section-head" style="margin:0">
+        <h2 class="rv">Our collections</h2>
+        <p class="lede rv" style="--i:1" id="home-coll-lede">Eight houses of design, each with its own story.</p>
+      </div>
+      <div class="rail-controls rv"><button data-dir="-1" aria-label="Previous"><i class="ph ph-arrow-left"></i></button><button data-dir="1" aria-label="Next"><i class="ph ph-arrow-right"></i></button></div>
+    </div>
+    <div class="rail" id="home-collections"></div>
+  </section>
+
+  <!-- Featured collection story -->
+  <section class="pad band-paper">
+    <div class="wrap feature">
+      <a class="zoom rv" href="collection.html?c=sanskriti"><div class="frame"><img src="assets/img/collections/sanskriti-hero.jpg" alt="Bride wearing Sanskriti temple jewellery" loading="lazy" style="object-position:66% center"></div></a>
+      <div class="feature-copy">
+        <span class="eyebrow rv">Sanskriti</span>
+        <h2 class="rv">Traditions carried forward.</h2>
+        <p class="lede rv" style="--i:1">Temple jewellery shaped by South Indian craft, made for the weddings and festivals your family will remember.</p>
+        <div class="mini-products rv" style="--i:2" id="feature-products"></div>
+        <div class="rv" style="--i:3"><a class="link-arrow" href="collection.html?c=sanskriti">Discover Sanskriti <i class="ph ph-arrow-right"></i></a></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Legacy colour block -->
+  <section class="pad band-red on-dark">
+    <div class="wrap legacy">
+      <div class="section-head" style="margin:0">
+        <span class="eyebrow rv">A legacy since 1976</span>
+        <h2 class="rv" style="--i:1">Trusted by jewellers in 33 countries. Chosen by families in Dubai.</h2>
+        <p class="lede rv" style="--i:2">The same expertise that supplies retailers across the world now helps you choose with confidence.</p>
+        <div class="rv" style="--i:3;margin-top:8px"><a class="link-arrow" href="about.html">Read our story <i class="ph ph-arrow-right"></i></a></div>
+      </div>
+      <div class="stats rv" style="--i:2">
+        <div class="stat"><b data-count="6000" data-suffix="+">0</b><span>Retailers supplied worldwide</span></div>
+        <div class="stat"><b data-count="33">0</b><span>Countries and counting</span></div>
+        <div class="stat"><b data-count="14" data-suffix="x">0</b><span>Highest importer of gold jewellery from India</span></div>
+        <div class="stat"><b>2015</b><span>Guinness World Record, longest handmade gold chain</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Shop by category: featured categories from the catalog -->
+  <section class="pad" id="find-your-design">
+    <div class="wrap">
+      <div class="section-head center"><h2 class="rv">Find your design</h2><p class="lede rv" style="--i:1">Start with what you love to wear. Every category brings together designs from all our collections.</p></div>
+      <div class="cats" id="home-cats"></div>
+    </div>
+  </section>
+
+  <!-- Promise bento -->
+  <section class="pad-sm">
+    <div class="wrap bento">
+      <div class="tile t-a rv">
+        <div class="frame"><img src="assets/img/home/store-moment.jpg" alt="A Siroya jeweller helping a mother and daughter choose a bangle" loading="lazy"></div>
+        <h3 class="h2">Your family jewellers</h3>
+        <p>Long-standing teams who treat every customer like family and help you choose with care.</p>
+      </div>
+      <div class="tile t-b rv" style="--i:1">
+        <i class="ph ph-globe-hemisphere-east"></i>
+        <h3>The world's designs, under one roof</h3>
+        <p>Supplying 6,000 retailers gives us a close view of what families love, season after season.</p>
+      </div>
+      <div class="tile t-c rv" style="--i:2">
+        <i class="ph ph-scales"></i>
+        <h3>Transparent value</h3>
+        <p>We work directly with manufacturers and our own workshops, so value is clear on every design.</p>
+      </div>
+      <div class="tile t-d rv">
+        <div class="t-d-row"><i class="ph ph-arrows-clockwise"></i><div><h3>Clear exchange and buyback</h3><p>Written policies, explained before you choose.</p></div></div>
+        <a class="btn btn-line" href="about.html">How we work</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Stores -->
+  <section class="pad" id="stores">
+    <div class="wrap">
+      <div class="section-head"><span class="eyebrow rv">Visit us</span><h2 class="rv" style="--i:1" id="home-stores-title">Four stores across Dubai</h2></div>
+      <div class="stores" id="home-stores"></div>
+    </div>
+  </section>
+
+  <div id="home-join"></div>
+</main>
+
+<footer class="site-footer" id="site-footer"></footer>
+<script src="assets/js/data.js"></script>
+<script src="assets/js/site.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/lenis@1.1.13/dist/lenis.min.js"></script>
+<script src="assets/js/motion.js"></script>
+</body>
+</html>

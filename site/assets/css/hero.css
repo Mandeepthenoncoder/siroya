@@ -1,0 +1,142 @@
+/* ==========================================================================
+   Homepage hero: single image, slideshow or muted video (assets/js/hero.js).
+   Builds on the .hero rules in siroya.css and keeps intro.css (curtain
+   hand-off) and motion.css (word rise, scroll parallax) working for every
+   slide, image or video. Feel: slow cross-fades, a long gentle zoom, copy
+   that rises in like the rest of the site. Load after intro.css.
+   ========================================================================== */
+
+/* While the API answers (at most ~0.9 s) the static hero waits on a dark
+   ground, so nobody sees one banner swap for another. The keyframes are a
+   failsafe: if hero.js never finishes, the static hero shows after 3 s. */
+.hero { background: radial-gradient(120% 90% at 62% 38%, #3a1212 0%, #241010 48%, #160b0a 100%); isolation: isolate; }
+.hero > .hero-media { transition: opacity .9s ease; }
+html.hero-pending .hero > .hero-media { opacity: 0; animation: hero-failsafe .8s ease 3s forwards; }
+html.hero-pending .hero > .wrap { visibility: hidden; animation: hero-failsafe-v 0s linear 3s forwards; }
+@keyframes hero-failsafe { to { opacity: 1; } }
+@keyframes hero-failsafe-v { to { visibility: visible; } }
+/* The static hero (or a previous render) steps aside under the new one */
+.hero > .hero-old.wrap, .hero > .hero-old.hero-bar { opacity: 0; transition: opacity .5s ease; pointer-events: none; }
+
+/* ---------- Slides: stacked in one grid cell, media full bleed ---------- */
+.hero .hero-slides { position: relative; z-index: 1; flex: 1 1 auto; align-self: stretch; display: grid; min-width: 0; touch-action: pan-y; }
+.hero .hero-slide { grid-area: 1 / 1; display: flex; align-items: flex-end; min-width: 0; }
+.hero .hero-slide > .hero-media { z-index: 0; opacity: 0; transition: opacity 0s linear 1.25s; }
+.hero .hero-slide.is-leaving > .hero-media { z-index: 1; }
+.hero .hero-slide.is-active > .hero-media { z-index: 2; opacity: 1; transition: opacity 1.2s cubic-bezier(0.4, 0, 0.2, 1); }
+.hero .hero-zoom { position: absolute; inset: 0; display: block; }
+.hero .hero-slide-copy { position: relative; z-index: 3; }
+.hero .hero-slide:not(.is-active) .hero-slide-copy { opacity: 0; visibility: hidden; transition: opacity .45s ease, visibility 0s linear .45s; }
+.hero .hero-slide.is-active .hero-slide-copy { transition: opacity .3s ease; }
+.hero .hero-eyebrow { color: var(--gold-2); }
+
+/* Focus point: where the desktop crop sits */
+.hero .hero-media[data-focus="center"] img, .hero .hero-media[data-focus="center"] video { object-position: 50% center; }
+.hero .hero-media[data-focus="left"] img, .hero .hero-media[data-focus="left"] video { object-position: 30% center; }
+
+/* Overlay: one gradient whose strength follows the admin's slider (--hero-ov, 0 to 0.8).
+   At the default 0.45 it matches the original home hero. */
+.hero[data-hero-mode] .hero-slide .hero-media::after {
+  background:
+    linear-gradient(90deg, rgba(36, 26, 25, calc(var(--hero-ov, 0.45) * 1.1)) 0%, rgba(36, 26, 25, calc(var(--hero-ov, 0.45) * 0.4)) 40%, transparent 62%),
+    linear-gradient(180deg, rgba(36, 26, 25, calc(0.12 + var(--hero-ov, 0.45) * 0.5)) 0%, transparent 28%, transparent 45%, rgba(36, 26, 25, calc(0.1 + var(--hero-ov, 0.45) * 1.38)) 100%);
+}
+.hero[data-align="center"] .hero-slide .hero-media::after {
+  background:
+    radial-gradient(66% 58% at 50% 67%, rgba(36, 26, 25, calc(0.1 + var(--hero-ov, 0.45) * 1.05)) 0%, rgba(36, 26, 25, calc(0.05 + var(--hero-ov, 0.45) * 0.6)) 46%, transparent 80%),
+    linear-gradient(180deg, rgba(36, 26, 25, calc(0.12 + var(--hero-ov, 0.45) * 0.5)) 0%, rgba(36, 26, 25, calc(var(--hero-ov, 0.45) * 0.25)) 30%, rgba(36, 26, 25, calc(var(--hero-ov, 0.45) * 0.4)) 58%, rgba(36, 26, 25, calc(0.1 + var(--hero-ov, 0.45) * 1.4)) 100%);
+}
+
+/* Legibility floor for bright footage: the lighter the overlay the admin picks,
+   the more the words carry a soft shadow of their own (0.26 at the default 0.45) */
+.hero[data-hero-mode] .hero-copy { --hero-shade: calc(0.1 + (0.8 - var(--hero-ov, 0.45)) * 0.45); }
+.hero[data-hero-mode] .hero-title, .hero[data-hero-mode] .hero-copy .lede { text-shadow: 0 1px 18px rgba(20, 12, 11, var(--hero-shade)); }
+.hero[data-hero-mode] .hero-eyebrow { text-shadow: 0 0 2px rgba(20, 12, 11, calc(var(--hero-shade) * 0.8)), 0 0 14px rgba(20, 12, 11, calc(var(--hero-shade) + 0.15)); }
+
+/* Centred copy */
+.hero[data-align="center"] .hero-copy { margin-inline: auto; text-align: center; justify-items: center; }
+.hero[data-align="center"] .hero-copy .lede { margin-inline: auto; }
+.hero[data-align="center"] .hero-ctas { justify-content: center; }
+
+/* ---------- Controls: progress lines, count, Pause / Play, previous / next ---------- */
+.hero .hero-bar { position: absolute; z-index: 5; left: 0; right: 0; bottom: 0; padding-bottom: calc(clamp(14px, 2.6vh, 28px) + env(safe-area-inset-bottom)); pointer-events: none; transition: opacity .5s ease; }
+.hero .hero-bar-in { display: flex; align-items: center; gap: 10px; }
+.hero .hero-bar-in > * { pointer-events: auto; }
+.hero .hero-bar-in > .hero-bar-gap { flex: 1 1 auto; pointer-events: none; }
+.hero[data-hero-mode="video"] .hero-bar-in { justify-content: flex-end; }
+
+.hero .hero-dots { display: flex; gap: 10px; min-width: 0; }
+.hero .hero-dot { width: clamp(34px, 4.6vw, 68px); height: 44px; padding: 0; border: 0; background: none; color: inherit; cursor: pointer; display: flex; align-items: center; border-radius: 4px; }
+.hero .hero-dot i { position: relative; display: block; width: 100%; height: 2px; overflow: hidden; border-radius: 1px; background: rgba(245, 242, 236, 0.3); transition: background-color .35s ease; }
+.hero .hero-dot i::after { content: ""; position: absolute; inset: 0; background: var(--gold-2); transform: scaleX(0); transform-origin: 0 50%; }
+.hero .hero-dot:hover i { background: rgba(245, 242, 236, 0.55); }
+.hero .hero-dot.is-active i::after { animation: hero-fill var(--hero-interval, 6s) linear forwards; }
+.hero.is-held .hero-dot.is-active i::after { animation-play-state: paused; }
+.hero.is-still .hero-dot.is-active i::after { animation: none; transform: none; }
+@keyframes hero-fill { to { transform: none; } }
+
+.hero .hero-count { margin-right: 8px; font-family: var(--serif); font-size: 0.8rem; letter-spacing: 0.16em; color: rgba(245, 242, 236, 0.62); font-variant-numeric: lining-nums tabular-nums; white-space: nowrap; }
+.hero .hero-count b { font-weight: 400; color: var(--cream); }
+
+.hero .hero-btn { flex: none; width: 44px; height: 44px; padding: 0; display: grid; place-items: center; border-radius: var(--r-sm, 8px); border: 1px solid rgba(245, 242, 236, 0.3); background: rgba(36, 26, 25, 0.18); color: var(--cream); font-size: 1.05rem; cursor: pointer; -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); transition: background-color .35s var(--ease), color .35s var(--ease), border-color .35s var(--ease); }
+.hero .hero-btn:hover { background: var(--cream); border-color: var(--cream); color: var(--wine); }
+.hero .hero-btn i { font-size: inherit; line-height: 1; }
+
+/* Copy clears the controls row */
+@media (min-width: 761px) {
+  .hero.has-bar[data-hero-mode="slideshow"] .hero-copy,
+  .hero.has-bar[data-hero-mode="video"][data-align="center"] .hero-copy { padding-bottom: calc(clamp(48px, 8vh, 96px) + 40px); }
+}
+
+/* ---------- Motion (none of it for reduced motion) ---------- */
+@media (prefers-reduced-motion: no-preference) {
+  /* Slideshow: the active image settles from a slight zoom over 8 s; the leaving
+     one keeps its frame until it has faded out, then resets out of sight. */
+  .hero[data-hero-mode="slideshow"] .hero-zoom { transform: scale(1.06); transition: transform 0s linear 1.3s; }
+  .hero[data-hero-mode="slideshow"] .hero-slide.is-active .hero-zoom { transform: none; transition: transform 8s cubic-bezier(0.25, 0.46, 0.45, 0.94); }
+  .hero[data-hero-mode="slideshow"] .hero-slide.is-active .hero-zoom, .hero[data-hero-mode="slideshow"] .hero-slide.is-leaving .hero-zoom { will-change: transform; }
+
+  /* Copy of waiting slides sits lowered and hidden; it rises in when its slide arrives */
+  .hero .hero-slide:not(.is-active) .rv { opacity: 0; transform: translateY(28px); transition: opacity 0s linear .5s, transform 0s linear .5s !important; }
+  .hero.is-cycled .hero-slide.is-active .rv { transition-property: opacity, transform !important; transition-duration: 1s, 1.2s !important; transition-timing-function: ease, var(--ease) !important; transition-delay: calc(0.45s + var(--i, 0) * 110ms) !important; }
+  .m-on .hero .hero-slide:not(.is-active) .m-split .mwi { transform: translate3d(0, 108%, 0); transition: transform 0s linear .5s; }
+  .m-on .hero.is-cycled .hero-slide.is-active .m-split.in .mwi { transition: transform 1.15s var(--m-ease, var(--ease)) calc(0.4s + var(--w, 0) * 42ms); }
+
+  /* Scroll parallax for the video too (images already have it in motion.css) */
+  @supports (animation-timeline: view()) {
+    .m-on .hero .hero-media video { animation: m-hero-img linear both; animation-timeline: scroll(root); animation-range: 0 100vh; }
+  }
+}
+
+/* Intro hand-off: the video makes the same entrance as the image, and the first
+   slide's slow zoom only starts once the curtain lifts */
+html.intro-active .hero .hero-media video { transform: scale(1.14); }
+body.intro-done .hero .hero-media video { transform: none; transition: transform 2.6s cubic-bezier(0.16, 1, 0.3, 1); }
+html.intro-active .hero[data-hero-mode="slideshow"] .hero-slide .hero-zoom { transform: scale(1.06); transition: none; }
+html.intro-active .hero .hero-bar { opacity: 0; }
+
+/* ---------- Tablets and phones ---------- */
+@media (max-width: 760px) {
+  .hero .hero-media[data-focus="left"] img, .hero .hero-media[data-focus="left"] video { object-position: 26% center; }
+  .hero .hero-media.has-mobile img { object-position: 50% 50%; }
+  .hero .hero-prev, .hero .hero-next { display: none; }
+  .hero .hero-dot { width: clamp(28px, 9vw, 44px); }
+  .hero.has-bar[data-hero-mode] .hero-copy { padding-bottom: calc(clamp(48px, 8vh, 96px) + 40px); }
+}
+@media (max-width: 640px) {
+  /* A phone crop made for phones needs no nudging */
+  .hero .hero-media.has-mobile img { top: 0; height: 100%; }
+  .hero[data-hero-mode] .hero-title, .hero[data-hero-mode] .hero-copy .lede { text-shadow: 0 1px 16px rgba(0, 0, 0, max(0.35, var(--hero-shade, 0.35))); }
+  .hero.has-bar[data-hero-mode] .hero-copy { padding-bottom: calc(28px + 52px + env(safe-area-inset-bottom)); }
+  .hero .hero-bar { padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
+  .hero .hero-dots { gap: 8px; }
+  .hero[data-hero-mode] .hero-slide .hero-media::after {
+    background: linear-gradient(180deg, rgba(36, 26, 25, calc(0.13 + var(--hero-ov, 0.45) * 0.6)) 0%, transparent 16%, transparent 44%, rgba(36, 26, 25, calc(var(--hero-ov, 0.45) * 1.11)) 58%, rgba(36, 26, 25, calc(0.2 + var(--hero-ov, 0.45) * 1.47)) 74%, rgba(36, 26, 25, calc(0.3 + var(--hero-ov, 0.45) * 1.42)) 100%);
+  }
+}
+
+/* Reduced motion: instant swaps, nothing moves by itself */
+@media (prefers-reduced-motion: reduce) {
+  .hero .hero-slide > .hero-media, .hero .hero-slide.is-active > .hero-media, .hero .hero-slide-copy { transition: none !important; }
+  .hero .hero-zoom { transform: none !important; }
+}
