@@ -234,13 +234,13 @@
             <li><a href="about.html">Our story</a></li>
             <li><a href="contact.html">Contact us</a></li>
             <li><a href="${waLink("Hello Siroya Jewellers, I would like to book a visit to one of your stores.")}" ${ext} data-wa="footer-visit">Book a visit via WhatsApp</a></li>
-            <li><a href="exchange-policy.html">Exchange and buyback</a></li>
+            <li><a href="exchange-policy.html">Exchange and money-back</a></li>
             ${s.email ? `<li><a href="mailto:${esc(s.email)}"><i class="ph ph-envelope-simple"></i>${esc(s.email)}</a></li>` : ""}
           </ul>`)}
         </div>
         <div class="foot-base">
           <ul class="foot-pay" role="list" aria-label="Payment methods we accept in store">${[["amex", "American Express"], ["apple-pay", "Apple Pay"], ["tabby", "Tabby"], ["mastercard", "Mastercard"], ["visa", "Visa"]].map(([f, alt]) => `<li><img src="assets/img/payments/${f}.svg" alt="${alt}" width="38" height="24" loading="lazy" decoding="async"></li>`).join("")}</ul>
-          <ul class="foot-legal" role="list" aria-label="Policies">${[["privacy-policy.html", "Privacy policy"], ["contact.html", "Contact information"], ["terms-of-service.html", "Terms of service"], ["refund-policy.html", "Refund policy"], ["exchange-policy.html", "Exchange and buyback"]].map(([href, label]) => `<li><a href="${href}">${label}</a></li>`).join("")}</ul>
+          <ul class="foot-legal" role="list" aria-label="Policies">${[["privacy-policy.html", "Privacy policy"], ["contact.html", "Contact information"], ["terms-of-service.html", "Terms of service"], ["refund-policy.html", "Refund policy"], ["exchange-policy.html", "Exchange and money-back"]].map(([href, label]) => `<li><a href="${href}">${label}</a></li>`).join("")}</ul>
           <p class="foot-copy">&copy; ${new Date().getFullYear()}, SIROYA Jewellers</p>
           <p class="foot-since">Jewellers to the world since ${esc(since)}</p>
         </div>

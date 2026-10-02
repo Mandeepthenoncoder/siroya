@@ -9,10 +9,13 @@
    ========================================================================== */
 
 /* Garet is the brand body face. Drop the licensed files into assets/fonts/
-   and uncomment below; Outfit is the stand-in until then. */
+   and uncomment below; Outfit is the stand-in until then. The family is
+   named "Garet Web" so a locally installed Garet is never picked up. When
+   live, set --sans to "Garet Web", "Outfit", ... and review 500/600 weights
+   (Garet ships 400 and 700 only). */
 /* Uncomment once the Garet files are in assets/fonts/
-@font-face { font-family: "Garet"; src: url("../fonts/Garet-Book.woff2") format("woff2"); font-weight: 400; font-display: swap; }
-@font-face { font-family: "Garet"; src: url("../fonts/Garet-Heavy.woff2") format("woff2"); font-weight: 700; font-display: swap; }
+@font-face { font-family: "Garet Web"; src: url("../fonts/Garet-Book.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Garet Web"; src: url("../fonts/Garet-Heavy.woff2") format("woff2"); font-weight: 700; font-display: swap; }
 */
 
 :root {
@@ -31,7 +34,9 @@
   --gold-grad: linear-gradient(100deg, #B49151 0%, #E2C283 48%, #B49151 100%);
 
   --serif: "Cinzel", "Trajan Pro", Georgia, serif;
-  --sans: "Garet", "Outfit", system-ui, sans-serif;
+  /* Garet is left out until the webfont files ship; a locally installed
+     Garet would otherwise override Outfit on some machines. */
+  --sans: "Outfit", system-ui, sans-serif;
 
   --r: 10px;
   --r-sm: 8px;

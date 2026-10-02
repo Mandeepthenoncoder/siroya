@@ -221,6 +221,37 @@
   .lg-help-acts .btn { width: 100%; }
 }
 
+/* Phones: each table row becomes a card, so the category stays with its
+   values (no sideways scrolling). Labels come from data-label on each cell. */
+@media (max-width: 600px) {
+  .lg-scroll { overflow: visible; -webkit-mask-image: none !important; mask-image: none !important; }
+  .lg-table.can-scroll .lg-swipe { display: none; }
+  .lg-scroll table, .lg-scroll tbody, .lg-scroll tr, .lg-scroll tbody th, .lg-scroll tbody td { display: block; width: auto; min-width: 0; }
+  .lg-scroll thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
+  .lg-scroll tbody { display: grid; gap: 12px; }
+  .lg-scroll tbody tr { background: var(--white); border: 1px solid var(--line); border-radius: var(--r); padding: 4px 18px; }
+  .lg-scroll tbody th { width: auto; padding: 14px 0 12px; border-bottom: 1px solid var(--line); }
+  .lg-scroll tbody td { padding: 12px 0; border-bottom: 1px solid var(--line); }
+  .lg-scroll tbody tr > :last-child { border-bottom: 0; padding-bottom: 14px; }
+  .lg-scroll tbody tr:last-child > * { border-bottom: 1px solid var(--line); }
+  .lg-scroll tbody tr:last-child > :last-child { border-bottom: 0; }
+  .lg-scroll td[data-label]::before {
+    content: attr(data-label); display: block; margin-bottom: 4px;
+    font-size: 0.68rem; letter-spacing: 0.14em; text-transform: uppercase; font-weight: 700; color: var(--ink-2);
+  }
+  .lg-scroll td.num { text-align: left; }
+}
+
+/* Touch screens and phones: contact links in the address card get a full tap target */
+@media (pointer: coarse), (max-width: 640px) {
+  .lg-contact dd a { display: inline-flex; align-items: center; min-height: 44px; }
+  .lg-contact dl { align-items: baseline; row-gap: 4px; }
+}
+@media (max-width: 640px) {
+  .lg-contact dl { row-gap: 0; }
+  .lg-contact dl > div + div dt { margin-top: 4px; }
+}
+
 /* ---------- Print: just the policy text ---------- */
 @media print {
   .site-header, .site-footer, .wa-float, .lg-policies, .lg-aside, .lg-toc-m, .lg-help, .lg-swipe { display: none !important; }

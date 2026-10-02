@@ -632,7 +632,7 @@ function editor(container, cx, st, lists) {
     const nameEl = h("strong", { class: "hp-tname-n" }), sumEl = h("span", { class: "hp-tname-s" });
     const bodyId = key + "-body";
     const toggle = h("button", { type: "button", class: "hp-toggle", "aria-expanded": "false", "aria-controls": bodyId,
-      onclick: () => { setOpen(!open); if (open) setActive(st.hero.slides.indexOf(s)); } },
+      onclick: () => { if (!open) closeOthers(s); setOpen(!open); if (open) setActive(st.hero.slides.indexOf(s)); } },
       thumb, h("span", { class: "hp-tname" }, nameEl, sumEl), icon("caret-down", "hp-caret"));
     const up = iconBtn("arrow-up", "Move up", () => moveSlide(s, -1, "up")); up.dataset.act = "up";
     const down = iconBtn("arrow-down", "Move down", () => moveSlide(s, 1, "down")); down.dataset.act = "down";
@@ -709,13 +709,15 @@ function editor(container, cx, st, lists) {
   const slidesCard = h("section", { class: "card" }, h("div", { class: "card-head hp-head" }, slidesTitle, slideCount), slidesSub, keptNote, list, addRow);
   st.hero.slides.forEach((s, i) => { const c = slideCard(s); cards.set(s, c); if (i === 0) c.setOpen(true); list.append(c.el); });
 
+  /* One slide open at a time keeps a long slideshow easy to scan. */
+  function closeOthers(keep) { cards.forEach((c, x) => { if (x !== keep) c.setOpen(false); }); }
   function addSlide() {
     if (st.hero.slides.length >= MAX_SLIDES) return;
     const s = blankSlide();
     st.hero.slides.push(s);
     const c = slideCard(s); cards.set(s, c);
     list.append(c.el);
-    c.setOpen(true);
+    closeOthers(s); c.setOpen(true);
     applyMode(); changed();
     setActive(st.hero.slides.length - 1);
     say(`Slide ${st.hero.slides.length} added.`);
@@ -1076,7 +1078,7 @@ function editor(container, cx, st, lists) {
     }
     if (colls?.length && !st.featured.collection) problems.push({ t: feat.target("collection"), msg: "Choose a collection to feature." });
     if (!problems.length) return true;
-    problems.forEach(p => p.t.error(p.msg));
+    problems.forEach(p => { p.t.error(p.msg); if (p.card && !p.hidden && m === "slideshow") p.card.setOpen(true); });
     const shown = problems.filter(p => !p.hidden);
     if (shown.length) {
       reveal(shown[0]);
