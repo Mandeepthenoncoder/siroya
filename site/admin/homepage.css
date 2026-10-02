@@ -235,7 +235,9 @@
   background: radial-gradient(120% 90% at 70% 30%, rgba(180, 145, 81, 0.35), transparent 60%), linear-gradient(160deg, #7A1A19, #4C0E0E);
   color: rgba(245, 242, 236, 0.6); font-size: 13px; letter-spacing: 0.14em; text-transform: uppercase;
 }
-/* Overlay: the public gradient, strength from the slider */
+/* Overlay, legibility floor and text shadows: the same formulas as
+   site/assets/css/hero.css (keep the two in step), so a light photo looks
+   exactly as readable here as it will on the website. */
 .hpv-shade {
   position: absolute; inset: 0; z-index: 2; pointer-events: none;
   background:
@@ -244,20 +246,35 @@
 }
 .hpv-hero[data-align="center"] .hpv-shade {
   background:
-    radial-gradient(75% 60% at 50% 74%, rgba(36, 26, 25, calc(var(--hero-ov) * 0.7)) 0%, transparent 72%),
+    radial-gradient(66% 58% at 50% 67%, rgba(36, 26, 25, calc(0.1 + var(--hero-ov) * 1.05)) 0%, rgba(36, 26, 25, calc(0.05 + var(--hero-ov) * 0.6)) 46%, transparent 80%),
     linear-gradient(180deg, rgba(36, 26, 25, calc(0.12 + var(--hero-ov) * 0.5)) 0%, rgba(36, 26, 25, calc(var(--hero-ov) * 0.25)) 30%, rgba(36, 26, 25, calc(var(--hero-ov) * 0.4)) 58%, rgba(36, 26, 25, calc(0.1 + var(--hero-ov) * 1.4)) 100%);
 }
 .hpv-wrap { position: relative; z-index: 3; width: 100%; max-width: 1400px; margin: 0 auto; padding: 0 56px; }
-.hpv-copy { display: grid; gap: 20px; max-width: 760px; padding-bottom: 72px; }
+.hpv-copy {
+  position: relative; display: grid; gap: 20px; max-width: 760px; padding-bottom: 72px;
+  --hero-floor: clamp(0, calc(0.88 - var(--hero-ov)), 0.8);
+  --hero-shade: calc(0.1 + (0.8 - var(--hero-ov)) * 0.45);
+}
+.hpv-copy::before {
+  content: ""; position: absolute; z-index: -1; inset: -55% -38% -35% -30%; pointer-events: none;
+  background: radial-gradient(closest-side,
+    rgba(36, 26, 25, var(--hero-floor)) 0%, rgba(36, 26, 25, calc(var(--hero-floor) * 0.97)) 30%,
+    rgba(36, 26, 25, calc(var(--hero-floor) * 0.86)) 50%, rgba(36, 26, 25, calc(var(--hero-floor) * 0.62)) 68%,
+    rgba(36, 26, 25, calc(var(--hero-floor) * 0.34)) 84%, rgba(36, 26, 25, calc(var(--hero-floor) * 0.12)) 94%, transparent 100%);
+}
+.hpv-hero[data-align="center"] .hpv-copy::before { inset: -55% -34% -35% -34%; }
+.hpv-copy:empty::before { content: none; }
+.hpv-h1, .hpv-lede { text-shadow: 0 1px 18px rgba(20, 12, 11, var(--hero-shade)), 0 0 3px rgba(20, 12, 11, calc(var(--hero-shade) * 0.6)); }
 .hpv-hero.has-bar[data-mode="slideshow"] .hpv-copy,
 .hpv-hero.has-bar[data-mode="video"][data-align="center"] .hpv-copy { padding-bottom: 112px; }
-.hpv-eyebrow { font-size: 11.84px; letter-spacing: 0.2em; text-transform: uppercase; font-weight: 500; color: var(--gold-2); }
+.hpv-eyebrow { font-size: 11.84px; letter-spacing: 0.2em; text-transform: uppercase; font-weight: 500; color: var(--cream);
+  text-shadow: 0 0 2px rgba(20, 12, 11, calc(var(--hero-shade) * 0.8)), 0 0 14px rgba(20, 12, 11, calc(var(--hero-shade) + 0.15)); }
 .hpv-h1 { font-family: var(--serif); font-weight: 400; font-size: 66px; line-height: 1.12; letter-spacing: 0.02em; text-wrap: balance; overflow-wrap: break-word; }
 .hpv-lede { margin: 0; font-size: 18px; color: rgba(245, 242, 236, 0.88); max-width: 56ch; overflow-wrap: break-word; }
 .hpv-ctas { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 8px; }
 .hpv-btn { display: inline-flex; align-items: center; justify-content: center; height: 52px; padding: 0 26px; border-radius: 8px; border: 1px solid transparent; font-size: 13.12px; letter-spacing: 0.12em; text-transform: uppercase; font-weight: 500; white-space: nowrap; }
 .hpv-btn-cream { background: var(--cream); color: var(--red); }
-.hpv-btn-line { border-color: currentColor; color: var(--cream); }
+.hpv-btn-line { border-color: rgba(245, 242, 236, 0.85); color: var(--cream); background: rgba(36, 26, 25, 0.32); }
 .hpv-hero[data-align="center"] .hpv-copy { margin-inline: auto; text-align: center; justify-items: center; }
 .hpv-hero[data-align="center"] .hpv-lede { margin-inline: auto; }
 .hpv-hero[data-align="center"] .hpv-ctas { justify-content: center; }
@@ -273,12 +290,12 @@
 .hpv-ctl { flex: none; width: 44px; height: 44px; display: grid; place-items: center; border-radius: 8px; border: 1px solid rgba(245, 242, 236, 0.3); background: rgba(36, 26, 25, 0.18); color: var(--cream); font-size: 16.8px; }
 .hpv-lines { display: flex; gap: 10px; }
 .hpv-line { width: 66px; height: 44px; display: flex; align-items: center; }
-.hpv-line b { position: relative; display: block; width: 100%; height: 2px; overflow: hidden; border-radius: 1px; background: rgba(245, 242, 236, 0.3); }
+.hpv-line b { position: relative; display: block; width: 100%; height: 2px; overflow: hidden; border-radius: 1px; background: rgba(245, 242, 236, 0.42); box-shadow: 0 0 0 1px rgba(36, 26, 25, 0.38); }
 .hpv-line b::after { content: ""; position: absolute; inset: 0; background: var(--gold-2); transform: scaleX(0); transform-origin: 0 50%; }
 .hpv-line.on b::after { transform: none; }
 .hpv-hero.is-playing .hpv-line.on b::after { transform: scaleX(0); animation: hpv-fill var(--dur, 6s) linear forwards; }
 @keyframes hpv-fill { to { transform: none; } }
-.hpv-count { margin-right: 8px; font-family: var(--serif); font-size: 12.8px; letter-spacing: 0.16em; color: rgba(245, 242, 236, 0.62); font-variant-numeric: lining-nums tabular-nums; white-space: nowrap; }
+.hpv-count { margin-right: 8px; font-family: var(--serif); font-size: 12.8px; letter-spacing: 0.16em; color: rgba(245, 242, 236, 0.72); text-shadow: 0 0 2px rgba(20, 12, 11, 0.5), 0 0 10px rgba(20, 12, 11, 0.45); font-variant-numeric: lining-nums tabular-nums; white-space: nowrap; }
 .hpv-count b { font-weight: 400; color: var(--cream); }
 
 /* Phone size: the public rules at max-width 640px */
@@ -293,9 +310,9 @@
 .hpv-site.is-phone .hpv-wrap { padding: 0 16px; }
 .hpv-site.is-phone .hpv-copy { gap: 16px; padding-bottom: 28px; }
 .hpv-site.is-phone .hpv-hero.has-bar .hpv-copy { padding-bottom: 80px; }
-.hpv-site.is-phone .hpv-eyebrow { color: var(--cream); text-shadow: 0 1px 12px rgba(0, 0, 0, 0.45); }
-.hpv-site.is-phone .hpv-h1 { font-size: 36.8px; text-shadow: 0 1px 16px rgba(0, 0, 0, 0.35); }
-.hpv-site.is-phone .hpv-lede { font-size: 16.32px; text-shadow: 0 1px 16px rgba(0, 0, 0, 0.35); }
+.hpv-site.is-phone .hpv-h1 { font-size: 36.8px; }
+.hpv-site.is-phone .hpv-lede { font-size: 16.32px; }
+.hpv-site.is-phone .hpv-h1, .hpv-site.is-phone .hpv-lede { text-shadow: 0 1px 16px rgba(0, 0, 0, max(0.35, var(--hero-shade, 0.35))); }
 .hpv-site.is-phone .hpv-ctas { gap: 10px; flex-wrap: nowrap; }
 .hpv-site.is-phone .hpv-btn { height: 50px; padding: 0 14px; letter-spacing: 0.07em; }
 .hpv-site.is-phone .hpv-btn-cream { flex: 1 1 auto; }

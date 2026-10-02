@@ -4,6 +4,7 @@ import { $, h, fill, icon, iconBtn, api, listOf, itemOf, normStore, invalidate, 
   plural, fmtDate, fmtTime, isOld, timeAgo, digits, safeHref } from "./lib.js";
 import { imageField } from "./media.js";
 import { orderList, thumbEl } from "./catalog.js";
+import { renderGoogleSettings } from "./traffic.js";
 
 /* ======================= Stores ======================= */
 export async function storesList(ctx) {
@@ -207,7 +208,8 @@ export async function settingsView(ctx) {
       card("WhatsApp enquiries", wa.wrap, waNote, h("div", { class: "row-gap" }, waTest)),
       card("Contact", h("div", { class: "grid-2" }, phone.wrap, email.wrap)),
       card("Social links", h("p", { class: "muted small card-sub", text: "Leave a link empty to hide that icon on the website." }), ig.wrap, fb.wrap, yt.wrap)));
-  ctx.root.replaceChildren(fr.head, h("p", { class: "page-sub page-sub-solo", text: "Contact details used across the website." }), form, fr.savebar);
+  const googleBox = h("div", { class: "edit-grid single" });
+  ctx.root.replaceChildren(fr.head, h("p", { class: "page-sub page-sub-solo", text: "Contact details used across the website." }), form, googleBox, fr.savebar);
   const paint = () => { const d = wa.value(); waTest.hidden = d.length < 8; waTest.href = `https://wa.me/${d}`; };
   const values = () => ({ whatsapp: wa.value().trim(), phone: phone.value().trim(), email: email.value().trim(),
     socials: { ...socials, instagram: ig.value().trim(), facebook: fb.value().trim(), youtube: yt.value().trim() } });
@@ -221,4 +223,5 @@ export async function settingsView(ctx) {
       return true;
     }
   });
+  renderGoogleSettings(googleBox, ctx);
 }

@@ -31,8 +31,11 @@ function sessionKey(req, ip) {
 /* Options:
    db, siteDir     required
    videoLimiter    optional limiter ({ hit(key) }), default 20 per hour
-   maxVideoBytes   optional size cap, default 80 MB */
-function registerHomepage(router, { db, siteDir, videoLimiter, maxVideoBytes = MAX_VIDEO_BYTES } = {}) {
+   maxVideoBytes   optional size cap, default 80 MB
+   uploadIdleMs    optional, longest gap between body chunks (default 45 s)
+   uploadMaxMs     optional, longest whole upload (default 20 min)
+   A stalled upload gets 408 and its socket is closed. */
+function registerHomepage(router, { db, siteDir, videoLimiter, maxVideoBytes = MAX_VIDEO_BYTES, uploadIdleMs, uploadMaxMs } = {}) {
   if (!db || !siteDir) throw new Error('registerHomepage needs { db, siteDir }');
   const limiter = videoLimiter || createLimiter({ limit: VIDEO_UPLOADS_PER_HOUR, windowMs: 60 * 60 * 1000 });
 
@@ -81,7 +84,7 @@ function registerHomepage(router, { db, siteDir, videoLimiter, maxVideoBytes = M
 
     let saved;
     try {
-      saved = await saveVideoStream(siteDir, req, { type, limit: maxVideoBytes });
+      saved = await saveVideoStream(siteDir, req, { type, limit: maxVideoBytes, idleMs: uploadIdleMs, maxMs: uploadMaxMs });
     } catch (err) {
       if (!(err instanceof HttpError) || req.destroyed || req.readableEnded) throw err;
       // Refused midway (wrong file type, or a chunked body past the limit).

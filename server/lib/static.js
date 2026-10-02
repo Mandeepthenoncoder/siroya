@@ -117,6 +117,7 @@ function createStatic(siteDir) {
       headers['X-Robots-Tag'] = 'noindex, nofollow';
     } else if (lowerPath.startsWith('/uploads/')) {
       headers['Cache-Control'] = 'public, max-age=31536000, immutable';
+      headers['Content-Security-Policy'] = "sandbox allow-same-origin; default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'";
     } else if (LONG_CACHE.has(ext)) {
       headers['Cache-Control'] = 'public, max-age=3600';
     } else {

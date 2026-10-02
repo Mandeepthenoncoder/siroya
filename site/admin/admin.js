@@ -5,15 +5,19 @@ import { $, $$, h, icon, clear, api, ApiError, setAuthHandler, nav, modal, confi
 import { productsList, productEdit } from "./products.js";
 import { categoriesList, categoryEdit, collectionsList, collectionEdit } from "./catalog.js";
 import { storesList, storeEdit, leadsView, settingsView, leadContact } from "./more.js";
+import { renderTrafficPage, renderDashboardTraffic } from "./traffic.js";
+import { renderHomepage } from "./homepage.js";
 
 const app = $("#app");
 const LOGO = "../assets/img/logo/siroya-red.png";
 
 const NAV = [
   { key: "dashboard", href: "#/", label: "Dashboard", short: "Home", icon: "house", tab: true },
+  { key: "traffic", href: "#/traffic", label: "Traffic", icon: "chart-line-up" },
   { key: "products", href: "#/products", label: "Products", icon: "diamond", tab: true },
   { key: "categories", href: "#/categories", label: "Categories", icon: "squares-four", tab: true },
   { key: "collections", href: "#/collections", label: "Collections", icon: "crown-simple" },
+  { key: "homepage", href: "#/homepage", label: "Homepage", icon: "house-line" },
   { key: "stores", href: "#/stores", label: "Stores", icon: "storefront" },
   { key: "leads", href: "#/leads", label: "Leads", icon: "chat-circle-text", tab: true },
   { key: "settings", href: "#/settings", label: "Settings", icon: "gear-six" }
@@ -21,12 +25,14 @@ const NAV = [
 
 const ROUTES = [
   { re: /^\/?$/, view: dashboard, nav: "dashboard", title: "Dashboard" },
+  { re: /^\/traffic$/, view: ctx => renderTrafficPage(ctx.root, ctx), nav: "traffic", title: "Traffic" },
   { re: /^\/products$/, view: productsList, nav: "products", title: "Products" },
   { re: /^\/products\/(new|\d+)$/, view: productEdit, nav: "products", title: "Product", detail: true },
   { re: /^\/categories$/, view: categoriesList, nav: "categories", title: "Categories" },
   { re: /^\/categories\/(new|\d+)$/, view: categoryEdit, nav: "categories", title: "Category", detail: true },
   { re: /^\/collections$/, view: collectionsList, nav: "collections", title: "Collections" },
   { re: /^\/collections\/(new|\d+)$/, view: collectionEdit, nav: "collections", title: "Collection", detail: true },
+  { re: /^\/homepage$/, view: ctx => renderHomepage(ctx.root, ctx), nav: "homepage", title: "Homepage", form: true },
   { re: /^\/stores$/, view: storesList, nav: "stores", title: "Stores" },
   { re: /^\/stores\/(new|\d+)$/, view: storeEdit, nav: "stores", title: "Store", detail: true },
   { re: /^\/leads$/, view: leadsView, nav: "leads", title: "Leads" },
@@ -267,11 +273,14 @@ async function dashboard(ctx) {
     { href: "#/products/new", icon: "plus-circle", label: "Add a product", text: "Photos, details and description" },
     { href: "#/categories", icon: "squares-four", label: "Homepage categories", text: "Choose what shows in Find your design" },
     { href: "#/collections", icon: "crown-simple", label: "Collections", text: "Stories, heroes and chapters" },
+    { href: "#/homepage", icon: "house-line", label: "Homepage banner", text: "Image, slideshow or video at the top" },
     { href: "/api/admin/leads.csv", icon: "file-csv", label: "Export leads", text: "Download every enquiry as CSV", download: true },
     { href: "../", icon: "arrow-square-out", label: "View website", text: "See the live site in a new tab", external: true }
   ];
+  const trafficBox = h("section", { class: "tr-dash-mount" });
   ctx.root.append(
     pageHead({ title: greeting(), subtitle: today }),
+    trafficBox,
     statsBox,
     h("div", { class: "dash-grid" },
       h("section", { class: "card" },
@@ -285,6 +294,7 @@ async function dashboard(ctx) {
             h("span", { class: "quick-text" }, h("strong", { text: q.label }), h("span", { class: "muted small", text: q.text })),
             icon("caret-right", "chev"))))))));
 
+  renderDashboardTraffic(trafficBox, ctx);
   const [stats, leads] = await Promise.allSettled([api("/stats"), api("/leads", { query: { page: 1, per: 5 } })]);
   if (!ctx.alive()) return;
   if (stats.status === "fulfilled") {

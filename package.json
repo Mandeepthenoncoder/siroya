@@ -9,6 +9,7 @@
   },
   "scripts": {
     "start": "node --no-warnings=ExperimentalWarning server/server.js",
-    "dev": "node --no-warnings=ExperimentalWarning server/server.js --port=5180"
+    "dev": "node --no-warnings=ExperimentalWarning server/server.js --port=5180",
+    "test": "node --no-warnings=ExperimentalWarning --test server/test/"
   }
 }

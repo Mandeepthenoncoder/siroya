@@ -68,6 +68,9 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/catalog":
             # Not a catalog: site.js falls back to data.js, as on static hosting, without a 404 in the console
             return self._send(200, b"{}")
+        if path == "/api/homepage":
+            # No saved banner: hero.js keeps the static hero, without a 404 in the console
+            return self._send(200, b"{}")
         if path.endswith(".html") or path.endswith("/"):
             fs = Path(self.translate_path(path))
             if fs.is_dir():

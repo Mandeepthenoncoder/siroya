@@ -14,6 +14,8 @@
      <script src="assets/js/hero.js"></script>
    Add data-manual to that tag to skip the automatic fetch (for example in an
    admin preview) and call window.SiroyaHero.render(section, hero) yourself.
+   render() always runs the data through the same cleaning as the API answer
+   (links, media paths, lengths), so raw editor state is safe to pass in.
    Events on window: "siroya:hero-ready" (detail.mode = image | slideshow |
    video | static) once the hero on screen is final. */
 (function () {
@@ -25,6 +27,7 @@
   var FADE = 1200;        // slide cross-fade, in step with hero.css
   var PHONE = "(max-width: 760px)";
   var MAX_SLIDES = 6;
+  var SITE_NAME = "Siroya Jewellers";
 
   var root = document.documentElement;
   var script = document.currentScript;
@@ -124,11 +127,16 @@
     return a;
   }
 
-  function copyBlock(s, first) {
+  /* The page's one h1. Image and video: the slide headline (always shown).
+     Slideshow: every headline is an h2 styled as h1, because hidden slides
+     leave the accessibility tree; a visually hidden h1 outside the slides
+     keeps the outline whole whichever slide is showing. */
+  function copyBlock(s, first, carousel) {
     var kids = [];
+    var top = first && !carousel;
     if (s.eyebrow) kids.push(h("span", { "class": "eyebrow hero-eyebrow rv" }, [s.eyebrow]));
-    if (s.headline) kids.push(h(first ? "h1" : "h2", { "class": "hero-title rv" + (first ? "" : " h1"), style: "--i:1" }, [s.headline]));
-    else if (first) kids.push(h("h1", { "class": "sr-only" }, ["Siroya Jewellers"]));
+    if (s.headline) kids.push(h(top ? "h1" : "h2", { "class": "hero-title rv" + (top ? "" : " h1"), style: "--i:1" }, [s.headline]));
+    else if (top) kids.push(h("h1", { "class": "sr-only" }, [SITE_NAME]));
     if (s.text) kids.push(h("p", { "class": "lede rv", style: "--i:2" }, [s.text]));
     var ctas = [];
     if (s.cta_label && s.cta_link) ctas.push(cta(s.cta_label, s.cta_link, "btn btn-cream"));
@@ -176,7 +184,7 @@
   /* ---------------- Render ---------------- */
   function render(section, data, opts) {
     opts = opts || {};
-    var hero = data && data.slides ? data : cleanHero(data);
+    var hero = cleanHero(data);   // always: callers may pass raw editor state
     if (!section || !hero) return null;
     if (section._siroyaHero) section._siroyaHero.destroy();
 
@@ -193,7 +201,12 @@
     // Whatever is on screen now (the static hero) stays underneath until the new one has faded in
     var old = Array.prototype.slice.call(section.children);
     var crossfade = !opts.instant && !wait && !root.classList.contains("hero-pending") && old.length > 0;
-    old.forEach(function (n) { if (crossfade) n.classList.add("hero-old"); else n.remove(); });
+    old.forEach(function (n) {
+      if (!crossfade) { n.remove(); return; }
+      n.classList.add("hero-old");
+      n.setAttribute("aria-hidden", "true");
+      n.setAttribute("inert", "");
+    });
     if (crossfade) later(function () { old.forEach(function (n) { n.remove(); }); }, FADE + 300);
 
     section.setAttribute("data-hero-mode", mode);
@@ -210,6 +223,7 @@
     }
 
     // Slides
+    var saver = lowData();   // Save-Data or 2G/3G: no autoplay, nothing fetched ahead
     var box = h("div", { "class": "hero-slides" });
     var video = null;
     var items = hero.slides.map(function (s, i) {
@@ -218,9 +232,9 @@
         var vm = videoMedia(hero.video, s, phoneMQ.matches, wait);
         media = vm.media; video = vm.video;
       } else {
-        media = imageMedia(s, i <= 1, i === 0);
+        media = imageMedia(s, i === 0 || (i === 1 && !saver), i === 0);
       }
-      var el = h("div", { "class": "hero-slide" }, [media, copyBlock(s, i === 0)]);
+      var el = h("div", { "class": "hero-slide" }, [media, copyBlock(s, i === 0, mode === "slideshow")]);
       if (mode === "slideshow") {
         el.setAttribute("role", "group");
         el.setAttribute("aria-roledescription", "slide");
@@ -253,6 +267,7 @@
       section.classList.add("has-bar");
     }
     if (bar) section.appendChild(bar);
+    if (mode === "slideshow") section.appendChild(h("h1", { "class": "sr-only hero-h1" }, [SITE_NAME]));
     section.appendChild(box);
     root.classList.remove("hero-pending");
 
@@ -285,7 +300,7 @@
     /* ----- Slideshow ----- */
     var cur = -1, token = 0, leaveT = 0;
     var interval = hero.interval * 1000;
-    var playing = mode === "slideshow" && !reduce && !opts.still;   // the visitor's choice (Pause / Play)
+    var playing = mode === "slideshow" && !reduce && !saver && !opts.still;   // the visitor's choice (Pause / Play)
     var timer = 0, left = interval, t0 = 0;
 
     function setInert(el, off) {
@@ -313,7 +328,7 @@
       }
       dots.forEach(function (d, i) { d.classList.toggle("is-active", i === n); if (i === n) d.setAttribute("aria-current", "true"); else d.removeAttribute("aria-current"); });
       if (counter) counter.innerHTML = "<b>" + String(n + 1).padStart(2, "0") + "</b> / " + String(N).padStart(2, "0");
-      if (N > 1) loadMedia(items[(n + 1) % N].media);   // only the next image is fetched ahead
+      if (N > 1 && (playing || !saver)) loadMedia(items[(n + 1) % N].media);   // only the next image is fetched ahead
       if (focusWasIn) {
         var target = items[n].el.querySelector("a[href]") || toggle;
         if (target) target.focus({ preventScroll: true });

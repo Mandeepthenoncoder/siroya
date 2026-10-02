@@ -22,7 +22,10 @@ Checks, in real Chrome through Playwright:
   cover only, broken file falls back to the cover); reduced motion (no
   autoplay, no zoom, instant swaps); intro hand-off (nothing plays or advances
   behind the intro, everything starts on siroya:intro-done); featured
-  collection section follows featured.resolved; hostile data is neutralised;
+  collection section follows featured.resolved; hostile data is neutralised,
+  also when raw editor state goes straight into SiroyaHero.render(); no layout
+  shift during the static-to-live cross-fade (CLS); one h1 in the outline on
+  every slide; Save-Data slideshow starts paused; focus ring with a dark halo;
   no page errors.
 
 Usage:  python server/test/hero_harness.py            run the checks
@@ -280,6 +283,11 @@ def check(cond, msg):
 
 
 SKIP_INTRO = "try { sessionStorage.setItem('siroya_intro_seen', '1'); } catch (e) {}"
+CLS_HOOK = """
+window.__cls = 0;
+try { new PerformanceObserver(function (l) { l.getEntries().forEach(function (e) { if (!e.hadRecentInput) window.__cls += e.value; }); })
+  .observe({ type: 'layout-shift', buffered: true }); } catch (e) {}
+"""
 READY_HOOK = """
 window.__heroReady = null;
 addEventListener('siroya:hero-ready', function (e) { window.__heroReady = e.detail.mode; });
@@ -358,19 +366,29 @@ def t_static_404(browser):
 
 def t_slow(browser):
     print("slow API: static first, then a cross-fade to the live hero")
-    ctx, page = new_page(browser)
-    set_mode(page, "image", delay=1500)
-    page.goto(f"{BASE}/index.html", wait_until="domcontentloaded")
-    page.wait_for_timeout(1100)
-    check(not js(page, "document.documentElement.classList.contains('hero-pending')"), "static shown after the hold")
-    check(js(page, "!!document.querySelector('.hero > .hero-media img[src=\"assets/img/home/hero.jpg\"]')"), "static image on screen while waiting")
-    page.wait_for_function("window.__heroReady === 'image'", timeout=5000)
-    check(js(page, "!!document.querySelector('.hero > .hero-old')"), "static kept underneath during the cross-fade")
-    page.wait_for_timeout(1800)
-    check(not js(page, "!!document.querySelector('.hero > .hero-old')"), "static removed after the cross-fade")
-    check(js(page, "document.querySelectorAll('.hero h1').length") == 1, "one h1 after the swap")
-    no_errors(page, "slow")
-    ctx.close()
+    for w, h in ((1440, 900), (390, 844)):
+        ctx, page = new_page(browser, w, h, mobile=w < 600, init=CLS_HOOK)
+        # 1.3 s: past the 0.9 s hold, with room to spare under the 2.5 s timeout
+        set_mode(page, "image", delay=1300)
+        page.goto(f"{BASE}/index.html", wait_until="domcontentloaded")
+        page.wait_for_timeout(1000)
+        check(not js(page, "document.documentElement.classList.contains('hero-pending')"), f"{w}: static shown after the hold")
+        check(js(page, "!!document.querySelector('.hero > .hero-media img[src=\"assets/img/home/hero.jpg\"]')"), f"{w}: static image on screen while waiting")
+        page.wait_for_function("window.__heroReady === 'image'", timeout=5000)
+        check(js(page, "!!document.querySelector('.hero > .hero-old')"), f"{w}: static kept underneath during the cross-fade")
+        old = js(page, "() => { const o = document.querySelector('.hero > .hero-old.wrap'); return o ? [o.getAttribute('aria-hidden'), o.hasAttribute('inert'), getComputedStyle(o).position] : null }")
+        check(old == ["true", True, "absolute"], f"{w}: outgoing copy hidden from assistive tech and out of the flow {old}")
+        page.wait_for_timeout(250)
+        mid = js(page, "() => { const r = document.querySelector('.hero-slide .hero-copy').getBoundingClientRect(); return [Math.round(r.left), Math.round(r.width)] }")
+        page.wait_for_timeout(1700)
+        check(not js(page, "!!document.querySelector('.hero > .hero-old')"), f"{w}: static removed after the cross-fade")
+        fin = js(page, "() => { const r = document.querySelector('.hero-slide .hero-copy').getBoundingClientRect(); return [Math.round(r.left), Math.round(r.width)] }")
+        check(mid == fin, f"{w}: new copy already in its final place mid-fade {mid} vs {fin}")
+        cls = js(page, "window.__cls")
+        check(cls < 0.05, f"{w}: CLS during the cross-fade {cls:.4f} < 0.05")
+        check(js(page, "document.querySelectorAll('.hero h1').length") == 1, f"{w}: one h1 after the swap")
+        no_errors(page, f"slow {w}")
+        ctx.close()
 
 
 def t_image(browser):
@@ -391,6 +409,9 @@ def t_image(browser):
     check(hero["h1"] == "Brilliance, set by hand", "headline")
     check(hero["ctas"] == ["collection.html?c=prestige", "about.html"], "buttons")
     check("diamond necklace" in hero["alt"], "alt text")
+    check(js(page, "getComputedStyle(document.querySelector('.hero .hero-eyebrow')).color") == "rgb(245, 242, 236)", "eyebrow in cream (legible on light photos)")
+    floor = js(page, "getComputedStyle(document.querySelector('.hero .hero-copy'), '::before').backgroundImage")
+    check(floor.startswith("radial-gradient"), f"copy keeps its own dark ground ({floor[:40]})")
     page.wait_for_timeout(2600)
     check(js(page, "[...document.querySelectorAll('.hero .rv')].every(e => getComputedStyle(e).opacity === '1')"), "copy revealed")
     check(js(page, "getComputedStyle(document.querySelector('.hero .hero-slide .hero-media')).opacity") == "1", "media faded in")
@@ -459,6 +480,11 @@ def t_slideshow(browser):
     check(all(t >= 0 for t in a["tab"][0]) and all(t == -1 for s in a["tab"][1:] for t in s), f"only active links focusable {a['tab']}")
     check(a["srcs"][0] and a["srcs"][1] and a["srcs"][2] is None, f"only the next image fetched ahead {a['srcs']}")
     check(a["h1s"] == 1, "one h1")
+    o = js(page, """() => { const h1 = document.querySelector('.hero h1');
+      return { inSlides: !!h1.closest('.hero-slides'), hidden: !!h1.closest('[aria-hidden="true"], [inert]'), text: h1.textContent,
+               heads: [...document.querySelectorAll('.hero-slide .hero-title')].map(e => e.tagName + '.' + e.className.split(' ').includes('h1')) } }""")
+    check(not o["inSlides"] and not o["hidden"] and o["text"] == "Siroya Jewellers", f"persistent h1 outside the slides {o}")
+    check(o["heads"] == ["H2.true"] * 3, f"slide headlines are h2 styled as h1 {o['heads']}")
     check(a["toggle"] == "Pause slideshow", "Pause button")
     check(a["dots"] == ["true", None, None], "first picker current")
     imgs = [p for p, _, _ in requests_log(page) if "collections/" in p and p.endswith("-hero.jpg")]
@@ -519,6 +545,8 @@ def t_slideshow(browser):
             break
         page.keyboard.press("Tab")
     check(js(page, "document.activeElement.classList.contains('hero-next')"), "Tab reaches Next")
+    ring = js(page, "() => { const s = getComputedStyle(document.activeElement); return [s.outlineStyle, s.outlineColor, s.boxShadow] }")
+    check(ring[0] == "solid" and ring[1] == "rgb(226, 194, 131)" and "rgba(36, 26, 25" in ring[2], f"focus ring: gold on a dark halo {ring}")
     page.wait_for_timeout(50)
     check(js(page, "document.querySelector('.hero').classList.contains('is-held')"), "keyboard focus inside pauses")
     i = active_index(page)
@@ -526,6 +554,12 @@ def t_slideshow(browser):
     check(active_index(page) == (i + 1) % 3, "ArrowRight = next")
     page.keyboard.press("ArrowLeft"); page.wait_for_timeout(900)
     check(active_index(page) == i, "ArrowLeft = previous")
+    # Whichever slide shows, the accessibility tree keeps exactly one h1
+    for k in (1, 2):
+        js(page, f"document.querySelector('.hero')._siroyaHero.go({k})")
+        page.wait_for_timeout(900)
+        h1s = js(page, "() => [...document.querySelectorAll('h1')].filter(e => !e.closest('[aria-hidden=\"true\"], [inert]')).length")
+        check(h1s == 1, f"slide {k + 1}: one h1 in the accessibility tree ({h1s})")
     # Focus inside a slide follows the slide
     page.evaluate("document.querySelector('.hero-slide.is-active .hero-ctas a').focus()")
     page.keyboard.press("ArrowRight"); page.wait_for_timeout(900)
@@ -626,6 +660,27 @@ def t_reduced(browser):
     r = js(page, "() => ({ video: !!document.querySelector('.hero video'), img: (document.querySelector('.hero .hero-media img') || {}).getAttribute && document.querySelector('.hero .hero-media img').getAttribute('src'), bar: !!document.querySelector('.hero-bar') })")
     check(not r["video"] and r["img"] and r["img"].endswith("poster.jpg") and not r["bar"], f"reduced motion video = cover only {r}")
     no_errors(page, "reduced video")
+    ctx.close()
+
+
+def t_savedata(browser):
+    print("Save-Data slideshow")
+    ctx, page = new_page(browser, init="Object.defineProperty(navigator, 'connection', {configurable: true, get: () => ({ saveData: true, effectiveType: '4g' })});")
+    set_mode(page, "slideshow")
+    open_home(page)
+    page.wait_for_timeout(300)
+    check(js(page, "document.querySelector('.hero-toggle').getAttribute('aria-label')") == "Play slideshow", "Save-Data: no autoplay, toggle offers Play")
+    srcs = js(page, "() => [...document.querySelectorAll('.hero-slide img')].map(i => i.getAttribute('src'))")
+    check(srcs[0] and srcs[1] is None and srcs[2] is None, f"Save-Data: nothing fetched ahead {srcs}")
+    page.mouse.move(1300, 200)
+    page.wait_for_timeout(4800)
+    check(active_index(page) == 0, "Save-Data: does not advance by itself")
+    imgs = [p for p, _, _ in requests_log(page) if "collections/" in p and p.endswith("-hero.jpg")]
+    check(imgs == ["/assets/img/collections/sanskriti-hero.jpg"], f"Save-Data: only the first slide downloaded {imgs}")
+    page.click(".hero-next")
+    page.wait_for_timeout(900)
+    check(active_index(page) == 1, "Save-Data: Next still works")
+    no_errors(page, "savedata")
     ctx.close()
 
 
@@ -793,6 +848,19 @@ def t_hostile(browser):
     page.wait_for_timeout(300)
     f = js(page, "() => ({ href: document.querySelector('.feature > a').getAttribute('href'), img: document.querySelector('.feature > a img').getAttribute('src') })")
     check(f["href"] == "collection.html?c=x" and not f["img"].startswith("javascript"), f"featured link and image sanitised {f}")
+    # Raw, unvalidated editor state handed straight to render() (the admin preview path)
+    raw = js(page, """() => { const sec = document.querySelector('.hero');
+      const ret = window.SiroyaHero.render(sec, { mode: 'image', slides: [{ image: 'javascript:alert(1)', image_mobile: '//evil.example/track.jpg',
+        headline: 'Raw', cta_label: 'click', cta_link: 'javascript:alert(document.domain)', cta2_label: 'data',
+        cta2_link: 'data:text/html,<script>alert(1)</script>' }], video: {} }, { preview: true, instant: true });
+      const after = { ret: ret, mode: sec.dataset.heroMode || null, hrefs: [...sec.querySelectorAll('a')].map(a => a.getAttribute('href')),
+        srcs: [...sec.querySelectorAll('img, source')].map(e => e.getAttribute('src') || e.getAttribute('srcset') || e.getAttribute('data-src') || e.getAttribute('data-srcset')) };
+      window.SiroyaHero.render(sec, { mode: 'image', slides: [{ image: 'assets/img/collections/nexa-hero.jpg', image_mobile: '//evil.example/t.jpg',
+        headline: 'Raw ok', cta_label: 'Bad', cta_link: 'javascript:alert(1)', cta2_label: 'Good', cta2_link: 'about.html' }], video: {} }, { preview: true, instant: true });
+      after.ok = { hrefs: [...sec.querySelectorAll('a')].map(a => a.getAttribute('href')), srcs: [...sec.querySelectorAll('img, source')].map(e => e.getAttribute('src') || e.getAttribute('srcset')) };
+      return after; }""")
+    check(raw["ret"] is None and all(not h.startswith(("javascript", "data", "//")) for h in raw["hrefs"]) and all(not s or not re.match(r"^(javascript|data|//)", s) for s in raw["srcs"]), f"raw hostile object: nothing usable, so nothing rendered; no script, data or off-site URLs {raw}")
+    check(raw["ok"]["hrefs"] == ["about.html"] and raw["ok"]["srcs"] == [IMG + "nexa-hero.jpg"], f"raw object: good values kept, bad ones dropped {raw['ok']}")
     no_errors(page, "hostile")
     ctx.close()
 
@@ -812,7 +880,7 @@ def main():
         SHOTS = Path(os.environ.get("HERO_SHOTS") or tempfile.mkdtemp(prefix="siroya-hero-shots-"))
         SHOTS.mkdir(parents=True, exist_ok=True)
         only = [a for a in sys.argv[1:] if not a.startswith("-")]
-        tests = [t_static_404, t_slow, t_image, t_image_mobile, t_slideshow, t_slideshow_phone, t_reduced, t_video, t_intro, t_hostile]
+        tests = [t_static_404, t_slow, t_image, t_image_mobile, t_slideshow, t_slideshow_phone, t_reduced, t_savedata, t_video, t_intro, t_hostile]
         with sync_playwright() as p:
             browser = p.chromium.launch(executable_path=CHROME, headless=not os.environ.get("HEADED"))
             for t in tests:

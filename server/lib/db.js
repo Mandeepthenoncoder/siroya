@@ -86,6 +86,8 @@ const MIGRATIONS = [
   CREATE INDEX IF NOT EXISTS idx_collections_sort ON collections(sort);
   CREATE INDEX IF NOT EXISTS idx_leads_created ON leads(created_at);
   `,
+  // v2: first-party analytics events + daily rollups (docs/TRAFFIC-SPEC.md)
+  require('./analytics').ANALYTICS_SCHEMA_SQL,
 ];
 
 function openDb(file = DB_FILE) {

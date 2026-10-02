@@ -21,3 +21,6 @@ __pycache__/
 *.log
 .DS_Store
 Thumbs.db
+
+# Local env files for import (never commit)
+*.env

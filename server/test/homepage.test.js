@@ -24,7 +24,8 @@ const {
 } = require('../lib/http');
 const H = require('../lib/homepage');
 const { registerHomepage } = require('../lib/api/homepage');
-const { saveVideoStream, cleanFilename, MAX_VIDEO_BYTES, TEMP_DIR } = require('../lib/videoupload');
+const { saveVideoStream, cleanFilename, MAX_VIDEO_BYTES, TEMP_DIR, UPLOAD_IDLE_MS, UPLOAD_MAX_MS, mp4Layout, webmLayout } = require('../lib/videoupload');
+const net = require('node:net');
 
 const SERVER_JS = path.resolve(__dirname, '..', 'server.js');
 const TEST_ENV = { ADMIN_PASSWORD: 'homepage-test-password', SESSION_SECRET: 'a1'.repeat(32), TRUST_PROXY: false };
@@ -214,14 +215,20 @@ function makeVideos(dir) {
   const webm = path.join(dir, 'test.webm');
   const real = { mp4: run(['-pix_fmt', 'yuv420p'], mp4), webm: run(['-c:v', 'libvpx', '-b:v', '100k'], webm) };
   if (!real.mp4) {
+    // ftyp box (32 bytes) then an mdat box filling the rest.
     const b = Buffer.alloc(4096);
     Buffer.from([0, 0, 0, 0x20]).copy(b, 0);
     b.write('ftypisom', 4, 'latin1');
+    b.writeUInt32BE(4096 - 32, 32);
+    b.write('mdat', 36, 'latin1');
     fs.writeFileSync(mp4, b);
   }
   if (!real.webm) {
+    // EBML header with DocType "webm", then a Segment of unknown size.
     const b = Buffer.alloc(4096);
-    Buffer.from([0x1a, 0x45, 0xdf, 0xa3]).copy(b, 0);
+    Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0x87, 0x42, 0x82, 0x84]).copy(b, 0);
+    b.write('webm', 8, 'latin1');
+    Buffer.from([0x18, 0x53, 0x80, 0x67, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]).copy(b, 12);
     fs.writeFileSync(webm, b);
   }
   return { mp4: fs.readFileSync(mp4), webm: fs.readFileSync(webm), real };
@@ -798,6 +805,12 @@ describe('homepage API over HTTP', () => {
       ['video/mp4', heic],
       ['video/mp4', Buffer.from('<html><script>alert(1)</script></html>'.repeat(10))],
       ['video/mp4', videos.mp4.subarray(0, 10)],
+      // Polyglots that borrow only the container signature.
+      ['video/mp4', Buffer.concat([Buffer.from([0, 0, 0, 0]), Buffer.from('ftypisom', 'latin1'), Buffer.from('<html><script>alert(document.domain)</script></html>'.repeat(3))])],
+      ['video/mp4', Buffer.concat([Buffer.from([0, 0, 0, 0x10]), Buffer.from('ftypisom\0\0\0\0', 'latin1'), Buffer.from('<html><body><script>alert(1)</script></body></html>'.repeat(3))])],
+      ['video/mp4', Buffer.concat([Buffer.from([0, 0, 0, 0x10]), Buffer.from('ftypisom\0\0\0\0', 'latin1'), Buffer.from('<html><script>alert(1)</script>'.repeat(300))])],
+      ['video/webm', Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>'.repeat(3))])],
+      ['video/webm', Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0x87, 0x42, 0x82, 0x84]), Buffer.from('webm<svg onload=alert(1)>'.repeat(4), 'latin1')])],
     ];
     for (const [type, body] of cases) {
       const r = await request(port, 'POST', '/api/admin/upload-video', { body, headers: authed({ 'Content-Type': type }) });
@@ -839,7 +852,7 @@ describe('homepage API over HTTP', () => {
     const stream = new Readable({
       read() {
         if (sent >= total) { this.push(null); return; }
-        const c = Buffer.from(sent === 0 ? Buffer.concat([videos.mp4.subarray(0, 32), chunk.subarray(32)]) : chunk);
+        const c = Buffer.from(sent === 0 ? Buffer.concat([videos.mp4.subarray(0, 4096), chunk.subarray(4096)]) : chunk);
         sent += c.length;
         this.push(c);
       },
@@ -1005,7 +1018,7 @@ describe('saveVideoStream (direct)', () => {
       read() {
         if (pushed >= limit * 4) { this.push(null); return; }
         const c = Buffer.alloc(16 * 1024);
-        if (pushed === 0) videos.mp4.copy(c, 0, 0, 32);
+        if (pushed === 0) videos.mp4.copy(c, 0, 0, 4096); // real box headers, then zeros
         pushed += c.length;
         this.push(c);
       },
@@ -1053,6 +1066,133 @@ describe('saveVideoStream (direct)', () => {
     assert.equal(cleanFilename('%E0%A4%A6%E0%A5%80%E0%A4%AA.mp4'), 'दीप.mp4');
     assert.equal(cleanFilename(undefined), '');
     assert.equal(cleanFilename('%zz.mp4'), 'zz.mp4');
+  });
+});
+
+describe('video layout checks', () => {
+  let videoDir;
+  let videos;
+  before(() => {
+    videoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'siroya-video-'));
+    videos = makeVideos(videoDir);
+  });
+  after(() => fs.rmSync(videoDir, { recursive: true, force: true }));
+
+  it('accepts real MP4 and WebM files, on the first 4 KB and on the whole file', () => {
+    assert.equal(mp4Layout(videos.mp4), true);
+    assert.equal(mp4Layout(videos.mp4.subarray(0, 4096)), true);
+    assert.equal(webmLayout(videos.webm), true);
+    assert.equal(webmLayout(videos.webm.subarray(0, 4096)), true);
+    assert.equal(mp4Layout(videos.webm), false);
+    assert.equal(webmLayout(videos.mp4), false);
+  });
+
+  it('accepts 64-bit and run-to-end box sizes and Void elements before the Segment', () => {
+    const ftyp = Buffer.concat([Buffer.from([0, 0, 0, 0x10]), Buffer.from('ftypmp42\0\0\0\0', 'latin1')]);
+    const large = Buffer.concat([ftyp, Buffer.from([0, 0, 0, 1]), Buffer.from('mdat', 'latin1'), Buffer.from([0, 0, 0, 0, 0, 0, 0x10, 0])]);
+    assert.equal(mp4Layout(large), true);
+    const toEnd = Buffer.concat([ftyp, Buffer.from([0, 0, 0, 0]), Buffer.from('mdat', 'latin1'), Buffer.alloc(64)]);
+    assert.equal(mp4Layout(toEnd), true);
+    assert.equal(mp4Layout(ftyp), false, 'ftyp alone is not a video');
+    assert.equal(mp4Layout(Buffer.concat([ftyp, Buffer.from([0, 0, 0, 4]), Buffer.from('free', 'latin1')])), false, 'box smaller than its header');
+    const ebml = Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0x87, 0x42, 0x82, 0x84, 0x77, 0x65, 0x62, 0x6d]);
+    const seg = Buffer.from([0x18, 0x53, 0x80, 0x67, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
+    assert.equal(webmLayout(Buffer.concat([ebml, seg])), true);
+    assert.equal(webmLayout(Buffer.concat([ebml, Buffer.from([0xec, 0x82, 0, 0]), seg])), true);
+    assert.equal(webmLayout(Buffer.concat([ebml, Buffer.from('<svg/>')])), false);
+    const other = Buffer.from(ebml);
+    other.write('xxxx', 8, 'latin1');
+    assert.equal(webmLayout(Buffer.concat([other, seg])), false, 'unknown DocType');
+  });
+});
+
+describe('video upload: stalled clients', () => {
+  let siteDir;
+  let videoDir;
+  let videos;
+  before(() => {
+    siteDir = tempSite();
+    videoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'siroya-video-'));
+    videos = makeVideos(videoDir);
+  });
+  after(() => {
+    fs.rmSync(siteDir, { recursive: true, force: true });
+    fs.rmSync(videoDir, { recursive: true, force: true });
+  });
+
+  it('has bounded defaults', () => {
+    assert.ok(UPLOAD_IDLE_MS >= 30000 && UPLOAD_IDLE_MS <= 60000);
+    assert.ok(UPLOAD_MAX_MS >= 10 * 60000 && UPLOAD_MAX_MS <= 30 * 60000);
+  });
+
+  it('rejects with 408 when no bytes arrive for idleMs, destroys the input and leaves no files', async () => {
+    const quiet = new Readable({ read() {} });
+    const started = Date.now();
+    const p = saveVideoStream(siteDir, quiet, { type: 'video/mp4', idleMs: 250 });
+    quiet.push(videos.mp4.subarray(0, 6 * 1024));
+    await assert.rejects(p, err => err instanceof HttpError && err.status === 408 && /stalled/.test(err.message));
+    assert.ok(Date.now() - started < 3000);
+    assert.equal(quiet.destroyed, true);
+    assert.deepEqual(listFiles(path.join(siteDir, 'uploads')), []);
+  });
+
+  it('keeps a slow but steady upload alive, and stops one that passes maxMs', async () => {
+    const trickle = (gap, total) => {
+      let i = 0;
+      const r = new Readable({ read() {} });
+      const t = setInterval(() => {
+        if (r.destroyed) { clearInterval(t); return; }
+        if (i * 1024 >= total) { clearInterval(t); r.push(null); return; }
+        const from = i * 1024;
+        r.push(from < videos.mp4.length ? videos.mp4.subarray(from, Math.min(total, from + 1024)) : Buffer.alloc(1024));
+        i++;
+      }, gap);
+      return r;
+    };
+    const ok = await saveVideoStream(siteDir, trickle(40, videos.mp4.length), { type: 'video/mp4', idleMs: 300 });
+    assert.equal(ok.bytes, videos.mp4.length);
+    fs.unlinkSync(ok.file);
+    const slow = trickle(40, 10 * 1024 * 1024);
+    await assert.rejects(saveVideoStream(siteDir, slow, { type: 'video/mp4', idleMs: 300, maxMs: 400 }), err => err.status === 408 && /too long/.test(err.message));
+    assert.equal(slow.destroyed, true);
+    assert.deepEqual(fs.readdirSync(path.join(siteDir, 'uploads', TEMP_DIR)), []);
+  });
+
+  it('closes a stalled HTTP upload socket and removes the temp file', async () => {
+    const db = freshDb();
+    const auth = createAuth(TEST_ENV);
+    const cookie = auth.issueCookie({ socket: {}, headers: {} }).split(';')[0];
+    const router = new Router();
+    registerHomepage(router, { db, siteDir, uploadIdleMs: 300 });
+    const server = http.createServer(testApp(router, { auth, siteDir }));
+    const errors = console.error;
+    console.error = () => {};
+    try {
+      const port = await listenInRange(server);
+      const sock = net.connect(port, '127.0.0.1');
+      await new Promise(resolve => sock.once('connect', resolve));
+      sock.on('error', () => {});
+      sock.write([
+        'POST /api/admin/upload-video HTTP/1.1', 'Host: 127.0.0.1', `Cookie: ${cookie}`,
+        'Content-Type: video/mp4', `Content-Length: ${50 * 1024 * 1024}`, '', '',
+      ].join('\r\n'));
+      sock.write(videos.mp4.subarray(0, 6 * 1024));
+      const started = Date.now();
+      const incoming = path.join(siteDir, 'uploads', TEMP_DIR);
+      await new Promise(resolve => setTimeout(resolve, 120));
+      assert.equal(fs.readdirSync(incoming).length, 1, 'temp file open while bytes are arriving');
+      await new Promise((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('server never closed the stalled socket')), 5000);
+        sock.once('close', () => { clearTimeout(t); resolve(); });
+      });
+      assert.ok(Date.now() - started < 5000);
+      await new Promise(resolve => setTimeout(resolve, 50));
+      assert.deepEqual(fs.readdirSync(incoming), []);
+    } finally {
+      console.error = errors;
+      await closeServer(server);
+      db.close();
+    }
   });
 });
 

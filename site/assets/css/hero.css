@@ -15,8 +15,11 @@ html.hero-pending .hero > .hero-media { opacity: 0; animation: hero-failsafe .8s
 html.hero-pending .hero > .wrap { visibility: hidden; animation: hero-failsafe-v 0s linear 3s forwards; }
 @keyframes hero-failsafe { to { opacity: 1; } }
 @keyframes hero-failsafe-v { to { visibility: visible; } }
-/* The static hero (or a previous render) steps aside under the new one */
+/* The static hero (or a previous render) steps aside under the new one. It
+   leaves the flex flow at once (it keeps its place: .wrap is full width with
+   auto margins), so the incoming slides get the whole row and nothing shifts. */
 .hero > .hero-old.wrap, .hero > .hero-old.hero-bar { opacity: 0; transition: opacity .5s ease; pointer-events: none; }
+.hero > .hero-old.wrap { position: absolute; left: 0; right: 0; bottom: 0; z-index: 0; }
 
 /* ---------- Slides: stacked in one grid cell, media full bleed ---------- */
 .hero .hero-slides { position: relative; z-index: 1; flex: 1 1 auto; align-self: stretch; display: grid; min-width: 0; touch-action: pan-y; }
@@ -28,7 +31,8 @@ html.hero-pending .hero > .wrap { visibility: hidden; animation: hero-failsafe-v
 .hero .hero-slide-copy { position: relative; z-index: 3; }
 .hero .hero-slide:not(.is-active) .hero-slide-copy { opacity: 0; visibility: hidden; transition: opacity .45s ease, visibility 0s linear .45s; }
 .hero .hero-slide.is-active .hero-slide-copy { transition: opacity .3s ease; }
-.hero .hero-eyebrow { color: var(--gold-2); }
+/* Cream, not gold: 12px gold over a light photo cannot reach 4.5:1 */
+.hero .hero-eyebrow { color: var(--cream); }
 
 /* Focus point: where the desktop crop sits */
 .hero .hero-media[data-focus="center"] img, .hero .hero-media[data-focus="center"] video { object-position: 50% center; }
@@ -47,11 +51,33 @@ html.hero-pending .hero > .wrap { visibility: hidden; animation: hero-failsafe-v
     linear-gradient(180deg, rgba(36, 26, 25, calc(0.12 + var(--hero-ov, 0.45) * 0.5)) 0%, rgba(36, 26, 25, calc(var(--hero-ov, 0.45) * 0.25)) 30%, rgba(36, 26, 25, calc(var(--hero-ov, 0.45) * 0.4)) 58%, rgba(36, 26, 25, calc(0.1 + var(--hero-ov, 0.45) * 1.4)) 100%);
 }
 
-/* Legibility floor for bright footage: the lighter the overlay the admin picks,
-   the more the words carry a soft shadow of their own (0.26 at the default 0.45) */
-.hero[data-hero-mode] .hero-copy { --hero-shade: calc(0.1 + (0.8 - var(--hero-ov, 0.45)) * 0.45); }
-.hero[data-hero-mode] .hero-title, .hero[data-hero-mode] .hero-copy .lede { text-shadow: 0 1px 18px rgba(20, 12, 11, var(--hero-shade)); }
+/* Legibility floor for bright photos and footage. The slider shades the whole
+   picture; whatever it says, the copy block keeps a soft dark ground of its
+   own (--hero-floor: 0.8 at 0, 0.43 at the default 0.45, gone at 0.8 and up), drawn behind
+   the words so it follows the copy at every width and alignment. The words
+   also carry a shadow that grows as the overlay gets lighter. */
+.hero[data-hero-mode] .hero-copy {
+  --hero-floor: clamp(0, calc(0.88 - var(--hero-ov, 0.45)), 0.8);
+  --hero-shade: calc(0.1 + (0.8 - var(--hero-ov, 0.45)) * 0.45);
+}
+.hero[data-hero-mode] .hero-copy::before {
+  content: ""; position: absolute; z-index: -1; inset: -55% -38% -35% -30%; pointer-events: none;
+  background: radial-gradient(closest-side,
+    rgba(36, 26, 25, var(--hero-floor)) 0%, rgba(36, 26, 25, calc(var(--hero-floor) * 0.97)) 30%,
+    rgba(36, 26, 25, calc(var(--hero-floor) * 0.86)) 50%, rgba(36, 26, 25, calc(var(--hero-floor) * 0.62)) 68%,
+    rgba(36, 26, 25, calc(var(--hero-floor) * 0.34)) 84%, rgba(36, 26, 25, calc(var(--hero-floor) * 0.12)) 94%, transparent 100%);
+}
+.hero[data-hero-mode][data-align="center"] .hero-copy::before { inset: -55% -34% -35% -34%; }
+.hero[data-hero-mode] .hero-title, .hero[data-hero-mode] .hero-copy .lede { text-shadow: 0 1px 18px rgba(20, 12, 11, var(--hero-shade)), 0 0 3px rgba(20, 12, 11, calc(var(--hero-shade) * 0.6)); }
 .hero[data-hero-mode] .hero-eyebrow { text-shadow: 0 0 2px rgba(20, 12, 11, calc(var(--hero-shade) * 0.8)), 0 0 14px rgba(20, 12, 11, calc(var(--hero-shade) + 0.15)); }
+
+/* Buttons and controls stay visible over a light picture */
+.hero[data-hero-mode] .hero-ctas .btn-line { background: rgba(36, 26, 25, 0.32); border-color: rgba(245, 242, 236, 0.85); color: var(--cream); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+.hero[data-hero-mode] .hero-ctas .btn-line:hover { background: var(--cream); border-color: var(--cream); color: var(--wine); }
+
+/* Focus ring that shows on light and dark photos alike: the gold ring sits
+   on a dark halo */
+.hero :focus-visible { outline: 2px solid var(--gold-2); outline-offset: 3px; box-shadow: 0 0 0 7px rgba(36, 26, 25, 0.6); }
 
 /* Centred copy */
 .hero[data-align="center"] .hero-copy { margin-inline: auto; text-align: center; justify-items: center; }
@@ -67,7 +93,7 @@ html.hero-pending .hero > .wrap { visibility: hidden; animation: hero-failsafe-v
 
 .hero .hero-dots { display: flex; gap: 10px; min-width: 0; }
 .hero .hero-dot { width: clamp(34px, 4.6vw, 68px); height: 44px; padding: 0; border: 0; background: none; color: inherit; cursor: pointer; display: flex; align-items: center; border-radius: 4px; }
-.hero .hero-dot i { position: relative; display: block; width: 100%; height: 2px; overflow: hidden; border-radius: 1px; background: rgba(245, 242, 236, 0.3); transition: background-color .35s ease; }
+.hero .hero-dot i { position: relative; display: block; width: 100%; height: 2px; overflow: hidden; border-radius: 1px; background: rgba(245, 242, 236, 0.42); box-shadow: 0 0 0 1px rgba(36, 26, 25, 0.38); transition: background-color .35s ease; }
 .hero .hero-dot i::after { content: ""; position: absolute; inset: 0; background: var(--gold-2); transform: scaleX(0); transform-origin: 0 50%; }
 .hero .hero-dot:hover i { background: rgba(245, 242, 236, 0.55); }
 .hero .hero-dot.is-active i::after { animation: hero-fill var(--hero-interval, 6s) linear forwards; }
@@ -75,7 +101,7 @@ html.hero-pending .hero > .wrap { visibility: hidden; animation: hero-failsafe-v
 .hero.is-still .hero-dot.is-active i::after { animation: none; transform: none; }
 @keyframes hero-fill { to { transform: none; } }
 
-.hero .hero-count { margin-right: 8px; font-family: var(--serif); font-size: 0.8rem; letter-spacing: 0.16em; color: rgba(245, 242, 236, 0.62); font-variant-numeric: lining-nums tabular-nums; white-space: nowrap; }
+.hero .hero-count { margin-right: 8px; font-family: var(--serif); font-size: 0.8rem; letter-spacing: 0.16em; color: rgba(245, 242, 236, 0.72); text-shadow: 0 0 2px rgba(20, 12, 11, 0.5), 0 0 10px rgba(20, 12, 11, 0.45); font-variant-numeric: lining-nums tabular-nums; white-space: nowrap; }
 .hero .hero-count b { font-weight: 400; color: var(--cream); }
 
 .hero .hero-btn { flex: none; width: 44px; height: 44px; padding: 0; display: grid; place-items: center; border-radius: var(--r-sm, 8px); border: 1px solid rgba(245, 242, 236, 0.3); background: rgba(36, 26, 25, 0.18); color: var(--cream); font-size: 1.05rem; cursor: pointer; -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); transition: background-color .35s var(--ease), color .35s var(--ease), border-color .35s var(--ease); }

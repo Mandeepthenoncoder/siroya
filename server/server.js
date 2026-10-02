@@ -14,6 +14,8 @@ const { createStatic } = require('./lib/static');
 const { Router } = require('./lib/router');
 const { registerPublic } = require('./lib/api/public');
 const { registerAdmin } = require('./lib/api/admin');
+const { registerTraffic } = require('./lib/api/traffic');
+const { registerHomepage } = require('./lib/api/homepage');
 const {
   HttpError, setSecurityHeaders, sendError, contentType, readJson, clientIp, json,
 } = require('./lib/http');
@@ -38,6 +40,8 @@ function createApp({ env, db, siteDir = SITE_DIR }) {
   const router = new Router();
   registerPublic(router, { db, leadLimiter });
   registerAdmin(router, { db, auth, env, loginLimiter, siteDir });
+  registerTraffic(router, { db, env });
+  registerHomepage(router, { db, siteDir });
 
   async function handleApi(req, res, ctx) {
     const found = router.match(req.method, ctx.path);
@@ -55,10 +59,22 @@ function createApp({ env, db, siteDir = SITE_DIR }) {
     let body = {};
     if (MUTATING.has(req.method)) {
       const allowedTypes = opts.contentTypes || ['application/json'];
-      if (!allowedTypes.includes(contentType(req))) {
-        throw new HttpError(415, `Content-Type must be ${allowedTypes.join(' or ')}`);
+      if (opts.beacon) {
+        // Beacon routes always reach their handler (it answers 204): a wrong
+        // content type or a body that is not a JSON object arrives as null.
+        try {
+          const parsed = await readJson(req, opts.limit || DEFAULT_BODY_LIMIT);
+          body = allowedTypes.includes(contentType(req)) ? parsed : null;
+        } catch (err) {
+          if (err instanceof HttpError && err.status === 413) throw err;
+          body = null;
+        }
+      } else {
+        if (!allowedTypes.includes(contentType(req))) {
+          throw new HttpError(415, `Content-Type must be ${allowedTypes.join(' or ')}`);
+        }
+        if (!opts.raw) body = await readJson(req, opts.limit || DEFAULT_BODY_LIMIT);
       }
-      body = await readJson(req, opts.limit || DEFAULT_BODY_LIMIT);
     }
 
     const result = await route.handler({ ...ctx, req, res, params, body });
@@ -143,7 +159,7 @@ function start() {
   seed(db, SITE_DIR);
 
   const server = http.createServer(createApp({ env, db }));
-  server.requestTimeout = 120000;
+  server.requestTimeout = 1200000;
   server.headersTimeout = 30000;
   server.keepAliveTimeout = 5000;
 

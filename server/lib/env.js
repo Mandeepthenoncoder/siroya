@@ -71,6 +71,8 @@ function loadEnv(file = ENV_FILE) {
     ADMIN_PASSWORD: get('ADMIN_PASSWORD') || '',
     SESSION_SECRET: get('SESSION_SECRET') || '',
     TRUST_PROXY: /^(1|true|yes)$/i.test(get('TRUST_PROXY') || ''),
+    TRUST_PROXY_HOPS: get('TRUST_PROXY_HOPS'),
+    PUBLIC_ORIGIN: get('PUBLIC_ORIGIN'),
   };
   if (env.ADMIN_PASSWORD.length < 12) console.warn('Warning: ADMIN_PASSWORD in server/.env is short. Use 12 or more characters.');
   if (env.SESSION_SECRET.length < 32) console.warn('Warning: SESSION_SECRET in server/.env is short. Use 32 or more random characters.');

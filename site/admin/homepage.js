@@ -101,6 +101,8 @@ const fileOf = p => { const last = String(p).split("/").pop() || String(p); try 
 const hasFiles = e => [...(e.dataTransfer?.types || [])].includes("Files");
 const isImageFile = f => /^image\//.test(f.type) || /\.(jpe?g|png|webp|gif|avif|heic|heif)$/i.test(f.name || "");
 const reducedMotion = () => { try { return matchMedia("(prefers-reduced-motion: reduce)").matches; } catch { return false; } };
+/* Touch screens: the drag handle is hidden there (homepage.css), so the help text must not mention it. */
+const coarse = () => { try { return matchMedia("(pointer: coarse)").matches; } catch { return false; } };
 
 /** Pasted addresses tidied: own site to a relative path, http to https, no leading slash. */
 function tidyLink(v) {
@@ -308,7 +310,12 @@ function bannerImage({ label, value = "", ratio, hint, required = false, optiona
 /* ======================= Video: raw upload with progress ======================= */
 function videoType(file) {
   const ext = (String(file.name).split(".").pop() || "").toLowerCase();
-  return file.type || (ext === "webm" ? "video/webm" : ext === "mp4" || ext === "m4v" ? "video/mp4" : ext === "mov" ? "video/quicktime" : "");
+  const type = String(file.type || "").toLowerCase();
+  if (type === "video/mp4" || type === "video/webm") return type;
+  // Safari names .m4v files video/x-m4v; an .mp4 or .m4v labelled QuickTime is still MP4 inside
+  if (type === "video/x-m4v" || ((type === "video/quicktime" || !type || type === "application/octet-stream") && (ext === "mp4" || ext === "m4v"))) return "video/mp4";
+  if ((!type || type === "application/octet-stream") && ext === "webm") return "video/webm";
+  return type || (ext === "mov" ? "video/quicktime" : "");
 }
 /** POST the file as the raw request body; resolves with the saved url. */
 function sendVideo(job, onProgress, retried = false) {
@@ -341,7 +348,7 @@ function sendVideo(job, onProgress, retried = false) {
 function videoField({ label, value = "", required = false, optional = false, hint, ratio = "16 / 9", onChange, onBusy }) {
   let url = S(value), job = null, meta = null, local = "";
   const id = nextId("vid"), labelId = id + "-l", errId = id + "-e", hintId = id + "-h";
-  const fileInput = h("input", { type: "file", accept: "video/mp4,video/webm,.mp4,.webm", class: "sr-only", tabindex: "-1", "aria-hidden": "true" });
+  const fileInput = h("input", { type: "file", accept: "video/mp4,video/webm,video/x-m4v,.mp4,.m4v,.webm", class: "sr-only", tabindex: "-1", "aria-hidden": "true" });
   const chooseLink = h("button", { type: "button", class: "linkish", onclick: () => fileInput.click() }, "choose a file");
   const chooseBtn = h("button", { type: "button", class: "btn btn-secondary drop-btn", onclick: () => fileInput.click() }, icon("upload-simple"), "Choose video");
   const drop = h("div", { class: "drop hpvid-drop", style: { "aspect-ratio": ratio } },
@@ -610,16 +617,18 @@ function editor(container, cx, st, lists) {
       hint: "Wide 16:9 photo, ideally 2400 x 1350. Bigger photos are resized for you.",
       onChange: v => { s.image = v; paintHead(); changed(); }, onBusy: changed });
     const phone = bannerImage({ label: "Phone image", optional: true, value: s.image_mobile, ratio: "4 / 5", maxEdge: 1600, kind: "phone", empty: "Portrait 4:5",
-      hint: "Portrait 4:5 for phones. Leave empty to use the desktop image.",
+      hint: "Portrait 4:5 for phones, ideally 1600 x 2000. Leave empty to use the desktop image.",
       onChange: v => { s.image_mobile = v; changed(); }, onBusy: changed });
     const focusId = nextId("focus");
     const focus = segmented({ labelledby: focusId, value: s.focus, className: "hp-seg-focus", options: focusOptions(), onChange: v => { s.focus = v; } });
+    const focusHint = h("p", { class: "hint" });
     const focusWrap = h("div", { class: "field" },
       h("div", { class: "label-row" }, h("span", { class: "label", id: focusId, text: "Keep in view" })),
       focus.el,
-      h("p", { class: "hint", text: "Narrower screens show only part of the wide photo. Choose the side that must stay visible." }));
+      focusHint);
     const alt = field({ label: "Image description", name: "alt", maxlength: CAP.alt, counter: true, value: s.alt,
       placeholder: "e.g. A bride wearing a gold temple necklace", hint: "Read aloud by screen readers. Describe what the photo shows." });
+    const altLabel = $("label", alt.wrap), altHint = $(".hint", alt.wrap);
     const eyebrow = field({ label: "Small line above the headline", name: "eyebrow", maxlength: CAP.eyebrow, counter: true, optional: true, value: s.eyebrow, placeholder: "e.g. Jewellers to the world since 1976" });
     const headline = field({ label: "Headline", name: "headline", maxlength: CAP.headline, counter: true, value: s.headline, placeholder: "e.g. Jewellery that feels like home" });
     const text = field({ label: "Text", name: "text", type: "textarea", rows: 2, maxlength: CAP.text, counter: true, optional: true, value: s.text, placeholder: "One or two short sentences" });
@@ -641,7 +650,24 @@ function editor(container, cx, st, lists) {
       h("span", { class: "drag-handle", "data-handle": "", title: "Drag to reorder", "aria-hidden": "true" }, icon("dots-six-vertical")),
       toggle, h("div", { class: "ud hp-ud" }, up, down, del));
     const sub = t => h("h3", { class: "hp-sub", text: t });
-    const mediaSec = h("div", { class: "hp-sec" }, sub("Photo"), h("div", { class: "hp-imgs" }, desk.el, phone.el), focusWrap, alt.wrap);
+    const mediaTitle = sub("Photo");
+    const imgsRow = h("div", { class: "hp-imgs" }, desk.el, phone.el);
+    const mediaSec = h("div", { class: "hp-sec" }, mediaTitle, imgsRow, focusWrap, alt.wrap);
+    /* Video mode: the photos step aside, but the crop side and the description
+       still apply to the video (hero.js uses them), so they stay editable. */
+    function paintMediaSec(m) {
+      const vid = m === "video";
+      imgsRow.hidden = vid;
+      mediaTitle.textContent = vid ? "Video framing" : "Photo";
+      focusHint.textContent = vid
+        ? "Narrower screens show only part of the wide video. Choose the side that must stay visible."
+        : "Narrower screens show only part of the wide photo. Choose the side that must stay visible.";
+      fill(altLabel, vid ? "Video description" : "Image description", vid ? h("span", { class: "opt", text: " (optional)" }) : null);
+      if (altHint) altHint.textContent = vid
+        ? "Read aloud by screen readers. Describe what the video shows, or leave it empty if the video is only there for mood."
+        : "Read aloud by screen readers. Describe what the photo shows.";
+      alt.input.placeholder = vid ? "e.g. A woman laughing in a sunlit room, wearing a diamond necklace" : "e.g. A bride wearing a gold temple necklace";
+    }
     const wordsSec = h("div", { class: "hp-sec" }, sub("Words"), eyebrow.wrap, headline.wrap, text.wrap);
     const btnSec = h("div", { class: "hp-sec" }, sub("Buttons"), b1.el, b2.el, h("p", { class: "hint", text: "Leave the button text empty to hide that button." }));
     const body = h("div", { class: "hp-slide-body", id: bodyId }, mediaSec, wordsSec, btnSec);
@@ -671,7 +697,7 @@ function editor(container, cx, st, lists) {
       mode = m; idx = i;
       el.classList.toggle("is-list", m === "slideshow");
       head.hidden = m !== "slideshow";
-      mediaSec.hidden = m === "video";
+      paintMediaSec(m);
       up.disabled = i === 0; down.disabled = i === n - 1; del.disabled = n <= 1;
       paintHead(); applyOpen();
     }
@@ -769,10 +795,10 @@ function editor(container, cx, st, lists) {
       hint: "Shows while the video loads, and instead of it on slow connections or for visitors who prefer less motion. A still from the video works well.",
       onChange: x => { v.poster = x; changed(); }, onBusy: changed });
     const mVid = videoField({ label: "Phone video", optional: true, value: v.src_mobile, ratio: "4 / 5",
-      hint: "A portrait version for phones. Leave empty to use the main video.",
+      hint: "Portrait 4:5, ideally 1080 x 1350, under 10 MB and the same length as the main video. Leave empty to use the main video.",
       onChange: x => { v.src_mobile = x; changed(); }, onBusy: changed });
     const mPoster = bannerImage({ label: "Phone cover image", optional: true, value: v.poster_mobile, ratio: "4 / 5", maxEdge: 1600, kind: "phone", empty: "Cover 4:5",
-      hint: "Portrait 4:5. Leave empty to use the main cover image.",
+      hint: "Portrait 4:5, ideally 1600 x 2000. Leave empty to use the main cover image.",
       onChange: x => { v.poster_mobile = x; changed(); }, onBusy: changed });
     const el = h("section", { class: "card hp-video-card" },
       h("h2", { class: "card-title", text: "Video" }),
@@ -795,7 +821,16 @@ function editor(container, cx, st, lists) {
     options: [{ value: "left", label: "Left", icon: "text-align-left" }, { value: "center", label: "Centre", icon: "text-align-center" }],
     onChange: v => { st.hero.align = v; } });
   const shade = rangeField({ label: "Shade behind the text", min: 0, max: 80, step: 5, value: Math.round(st.hero.overlay * 100), fmt: v => `${v}%`, ends: ["None", "Strong"],
-    hint: "Darkens the photo so white text stays easy to read. 45% suits most photos.", onInput: v => { st.hero.overlay = v / 100; } });
+    hint: "Darkens the photo so white text stays easy to read. 45% suits most photos.", onInput: v => { st.hero.overlay = v / 100; paintShadeWarn(); } });
+  const shadeWarn = h("p", { class: "note hp-note hp-shade-warn", "aria-live": "polite" });
+  shade.wrap.append(shadeWarn);
+  function paintShadeWarn() {
+    const low = st.hero.overlay < 0.35;
+    shadeWarn.hidden = !low;
+    if (low && !shadeWarn.firstChild) fill(shadeWarn, icon("warning"), h("span", { text: "White text may be hard to read on light photos. The words keep a soft shade of their own, but 35% or more is safer." }));
+    if (!low) fill(shadeWarn);
+  }
+  paintShadeWarn();
   const timing = rangeField({ label: "Time per slide", min: 4, max: 12, step: 1, value: st.hero.interval, fmt: v => `${v} seconds`, ends: ["4 s", "12 s"],
     hint: "How long each slide stays before the next one fades in.", onInput: v => { st.hero.interval = v; } });
   const lookCard = h("section", { class: "card hp-look" },
@@ -817,7 +852,7 @@ function editor(container, cx, st, lists) {
     singleLine(text.input);
     const cta = field({ label: "Link text", name: "featured-cta", maxlength: CAP.label, optional: true, value: f.cta_label });
     const img = imageField({ label: "Image", value: f.image, ratio: "4 / 5", slotLabel: "Uses the collection photo",
-      hint: "Optional, portrait 4:5. Leave empty to use the collection's own photo.", onChange: v => { f.image = v; paint(); changed(); } });
+      hint: "Optional, portrait 4:5, ideally 1600 x 2000. Leave empty to use the collection's own photo.", onChange: v => { f.image = v; paint(); changed(); } });
     sel.input.addEventListener("change", () => { f.collection = sel.value(); paint(); });
     bind(head, f, "headline", () => paint()); bind(text, f, "text", () => paint()); bind(cta, f, "cta_label", () => paint());
 
@@ -1031,7 +1066,7 @@ function editor(container, cx, st, lists) {
     vc.el.hidden = m !== "video";
     timing.wrap.hidden = m !== "slideshow";
     slidesTitle.textContent = m === "slideshow" ? "Slides" : m === "video" ? "Text on the video" : "Banner";
-    slidesSub.textContent = m === "slideshow" ? "Shown in this order. Drag a slide or use the arrows to change the order."
+    slidesSub.textContent = m === "slideshow" ? (coarse() ? "Shown in this order. Use the arrows to change the order." : "Shown in this order. Drag a slide or use the arrows to change the order.")
       : m === "video" ? "Shown over the video, with the same shade and position as a photo." : "One photo with your words and buttons on top.";
     slideCount.hidden = m !== "slideshow";
     slideCount.textContent = `${n} of ${MAX_SLIDES}`;
