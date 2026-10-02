@@ -12,7 +12,8 @@ const { HttpError, json, parseCookies, contentType } = require('../http');
 const { COOKIE } = require('../auth');
 const { createLimiter } = require('../ratelimit');
 const H = require('../homepage');
-const { saveVideoStream, cleanFilename, VIDEO_TYPES, MAX_VIDEO_BYTES } = require('../videoupload');
+const path = require('node:path');
+const { saveVideoStream, cleanFilename, sweepStale, VIDEO_TYPES, MAX_VIDEO_BYTES, TEMP_DIR } = require('../videoupload');
 
 const VIDEO_UPLOADS_PER_HOUR = 20;
 const DRAIN_AFTER_413 = 8 * 1024 * 1024;
@@ -35,32 +36,33 @@ function sessionKey(req, ip) {
    uploadIdleMs    optional, longest gap between body chunks (default 45 s)
    uploadMaxMs     optional, longest whole upload (default 20 min)
    A stalled upload gets 408 and its socket is closed. */
-function registerHomepage(router, { db, siteDir, videoLimiter, maxVideoBytes = MAX_VIDEO_BYTES, uploadIdleMs, uploadMaxMs } = {}) {
+function registerHomepage(router, { db, siteDir, storage, videoLimiter, maxVideoBytes = MAX_VIDEO_BYTES, uploadIdleMs, uploadMaxMs } = {}) {
   if (!db || !siteDir) throw new Error('registerHomepage needs { db, siteDir }');
   const limiter = videoLimiter || createLimiter({ limit: VIDEO_UPLOADS_PER_HOUR, windowMs: 60 * 60 * 1000 });
 
-  // First run: store the defaults so the admin starts from the current hero.
-  try { H.seedHomepage(db); } catch (err) { console.warn(`Homepage seed skipped: ${err.message}`); }
-
-  router.get('/api/homepage', ({ req, res }) => {
-    json(req, res, 200, H.resolveFeatured(db, H.getHomepage(db)));
+  router.get('/api/homepage', async ({ req, res }) => {
+    json(req, res, 200, await H.resolveFeatured(db, await H.getHomepage(db)));
   });
 
   router.get('/api/admin/homepage', () => H.getHomepage(db), { auth: true });
 
   /* Full object. A missing top-level "hero" or "featured" keeps the saved one. */
-  router.put('/api/admin/homepage', ({ body }) => db.tx(() => {
-    const current = H.getHomepage(db);
+  router.put('/api/admin/homepage', ({ body }) => db.tx(async () => {
+    const current = await H.getHomepage(db);
     const input = {
       hero: hasOwn(body, 'hero') ? body.hero : current.hero,
       featured: hasOwn(body, 'featured') ? body.featured : current.featured,
     };
     const clean = H.validate(input);
-    H.assertFeaturedCollection(db, clean.featured.collection);
+    await H.assertFeaturedCollection(db, clean.featured.collection);
     return H.saveHomepage(db, clean);
   }), { auth: true });
 
   router.post('/api/admin/upload-video', async ({ req, res, ip }) => {
+    if (storage && storage.kind === 'r2') {
+      // Media lives in R2: the admin uploads straight there (upload/presign).
+      throw new HttpError(409, 'Videos upload straight to media storage. Please reload the admin and try again.');
+    }
     // Browsers send Sec-Fetch-Site; refuse uploads started from another site.
     if (String(req.headers['sec-fetch-site'] || '').toLowerCase() === 'cross-site') {
       throw new HttpError(403, 'Uploads must come from the Siroya admin');
@@ -106,6 +108,21 @@ function registerHomepage(router, { db, siteDir, videoLimiter, maxVideoBytes = M
     json(req, res, 201, { url: saved.url, bytes: saved.bytes, type: saved.type, name: cleanFilename(req.headers['x-filename']) });
     return undefined;
   }, { auth: true, raw: true, contentTypes: Object.keys(VIDEO_TYPES) });
+
+  /* Start-up work, awaited once before the first request: store the defaults
+     so the admin starts from the current hero. */
+  async function init() {
+    try { await H.seedHomepage(db); } catch (err) { console.warn(`Homepage seed skipped: ${err.message}`); }
+  }
+
+  /* Daily cron: removes stale temp files of interrupted local video uploads. */
+  function sweep() {
+    if (storage && storage.kind === 'r2') return false;
+    sweepStale(path.join(siteDir, 'uploads', TEMP_DIR));
+    return true;
+  }
+
+  return { init, sweep };
 }
 
 /* Reads and drops the unread part of a refused upload. Resolves true once the

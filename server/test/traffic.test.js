@@ -35,19 +35,44 @@ const UA = {
 
 /* ---------- helpers ---------- */
 
-function quietly(fn) {
+async function quietly(fn) {
   const log = console.log;
   console.log = () => {};
-  try { return fn(); } finally { console.log = log; }
+  try { return await fn(); } finally { console.log = log; }
 }
 
-function freshDb() {
-  return quietly(() => {
+async function freshDb() {
+  return quietly(async () => {
     const db = openDb(':memory:');
-    db.migrate();
-    A.ensureAnalyticsSchema(db.raw);
+    await db.migrate();
+    await A.ensureAnalyticsSchema(db);
     return db;
   });
+}
+
+const countEvents = async db => (await db.get('SELECT COUNT(*) AS n FROM events')).n;
+
+/* On Windows a closed libsql database keeps its file open until its native
+   statement handles are garbage collected, so collect and retry. */
+const forceGc = (() => {
+  try {
+    require('node:v8').setFlagsFromString('--expose_gc');
+    return require('node:vm').runInNewContext('gc');
+  } catch {
+    return () => {};
+  }
+})();
+async function removeDir(dir) {
+  for (let i = 0; ; i++) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch (err) {
+      if (!['EBUSY', 'EPERM'].includes(err.code) || i >= 40) throw err;
+      forceGc();
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+  }
 }
 
 async function listenInRange(server, from = 5301, to = 5320) {
@@ -138,10 +163,10 @@ function apiHarness(router, { isAuthed, beaconPatch = false }) {
   };
 }
 
-function seedCatalog(db) {
-  db.stmt("INSERT INTO collections (slug, name) VALUES ('bridal', 'Bridal Collection')").run();
-  db.stmt("INSERT INTO categories (slug, name) VALUES ('rings', 'Rings')").run();
-  db.stmt("INSERT INTO products (handle, code, name, collection, category) VALUES ('rose-ring', 'SJ-101', 'Rose Ring', 'bridal', 'rings')").run();
+async function seedCatalog(db) {
+  await db.stmt("INSERT INTO collections (slug, name) VALUES ('bridal', 'Bridal Collection')").run();
+  await db.stmt("INSERT INTO categories (slug, name) VALUES ('rings', 'Rings')").run();
+  await db.stmt("INSERT INTO products (handle, code, name, collection, category) VALUES ('rose-ring', 'SJ-101', 'Rose Ring', 'bridal', 'rings')").run();
 }
 
 const insertLead = (db, createdAt) => db.stmt('INSERT INTO leads (created_at, name, phone) VALUES (?, ?, ?)').run(createdAt, 'Test', '971500000000');
@@ -229,51 +254,51 @@ describe('analytics: deriveSource', () => {
 
 describe('analytics: recordEvent', () => {
   let db;
-  before(() => { db = freshDb(); });
+  before(async () => { db = await freshDb(); });
   after(() => db.close());
 
   const meta = { ua: UA.desktop, host: 'siroya.com', now: BASE };
-  const count = () => db.stmt('SELECT COUNT(*) AS n FROM events').get().n;
+  const count = () => countEvents(db);
   const last = () => db.stmt('SELECT * FROM events ORDER BY id DESC LIMIT 1').get();
 
-  it('rejects non-objects, unknown types and bad session ids without throwing', () => {
-    const before = count();
-    assert.deepEqual(A.recordEvent(db, null, meta), { ok: false, reason: 'invalid' });
-    assert.deepEqual(A.recordEvent(db, [], meta), { ok: false, reason: 'invalid' });
-    assert.deepEqual(A.recordEvent(db, 'page_view', meta), { ok: false, reason: 'invalid' });
-    assert.equal(A.recordEvent(db, { sid: '0123456789abcdef' }, meta).reason, 'invalid_type');
-    assert.equal(A.recordEvent(db, { t: 'click', sid: '0123456789abcdef' }, meta).reason, 'invalid_type');
-    assert.equal(A.recordEvent(db, { t: 'filter_category', sid: '0123456789abcdef' }, meta).reason, 'invalid_type');
-    assert.equal(A.recordEvent(db, { t: 'page_view' }, meta).reason, 'invalid_sid');
-    assert.equal(A.recordEvent(db, { t: 'page_view', sid: '0123456789ABCDEF' }, meta).reason, 'invalid_sid');
-    assert.equal(A.recordEvent(db, { t: 'page_view', sid: '0123456789abcde' }, meta).reason, 'invalid_sid');
-    assert.equal(A.recordEvent(db, { t: 'page_view', sid: '0123456789abcdef0' }, meta).reason, 'invalid_sid');
-    assert.equal(A.recordEvent(db, { t: 'page_view', sid: 'g123456789abcdef' }, meta).reason, 'invalid_sid');
-    assert.equal(count(), before);
+  it('rejects non-objects, unknown types and bad session ids without throwing', async () => {
+    const before = await count();
+    assert.deepEqual(await A.recordEvent(db, null, meta), { ok: false, reason: 'invalid' });
+    assert.deepEqual(await A.recordEvent(db, [], meta), { ok: false, reason: 'invalid' });
+    assert.deepEqual(await A.recordEvent(db, 'page_view', meta), { ok: false, reason: 'invalid' });
+    assert.equal((await A.recordEvent(db, { sid: '0123456789abcdef' }, meta)).reason, 'invalid_type');
+    assert.equal((await A.recordEvent(db, { t: 'click', sid: '0123456789abcdef' }, meta)).reason, 'invalid_type');
+    assert.equal((await A.recordEvent(db, { t: 'filter_category', sid: '0123456789abcdef' }, meta)).reason, 'invalid_type');
+    assert.equal((await A.recordEvent(db, { t: 'page_view' }, meta)).reason, 'invalid_sid');
+    assert.equal((await A.recordEvent(db, { t: 'page_view', sid: '0123456789ABCDEF' }, meta)).reason, 'invalid_sid');
+    assert.equal((await A.recordEvent(db, { t: 'page_view', sid: '0123456789abcde' }, meta)).reason, 'invalid_sid');
+    assert.equal((await A.recordEvent(db, { t: 'page_view', sid: '0123456789abcdef0' }, meta)).reason, 'invalid_sid');
+    assert.equal((await A.recordEvent(db, { t: 'page_view', sid: 'g123456789abcdef' }, meta)).reason, 'invalid_sid');
+    assert.equal(await count(), before);
   });
 
-  it('drops bots', () => {
-    const before = count();
-    const r = A.recordEvent(db, { t: 'page_view', sid: '0123456789abcdef' }, { ...meta, ua: 'Googlebot/2.1' });
+  it('drops bots', async () => {
+    const before = await count();
+    const r = await A.recordEvent(db, { t: 'page_view', sid: '0123456789abcdef' }, { ...meta, ua: 'Googlebot/2.1' });
     assert.deepEqual(r, { ok: false, reason: 'bot' });
-    assert.equal(A.recordEvent(db, { t: 'page_view', sid: '0123456789abcdef' }, { ...meta, ua: '' }).reason, 'bot');
-    assert.equal(count(), before);
+    assert.equal((await A.recordEvent(db, { t: 'page_view', sid: '0123456789abcdef' }, { ...meta, ua: '' })).reason, 'bot');
+    assert.equal(await count(), before);
   });
 
-  it('accepts every allowed type', () => {
+  it('accepts every allowed type', async () => {
     for (const t of A.EVENT_TYPES) {
-      assert.equal(A.recordEvent(db, { t, sid: '0123456789abcdef' }, meta).ok, true, t);
+      assert.equal((await A.recordEvent(db, { t, sid: '0123456789abcdef' }, meta)).ok, true, t);
     }
   });
 
-  it('cleans, caps and derives fields; stores no IP or user agent', () => {
-    const r = A.recordEvent(db, {
+  it('cleans, caps and derives fields; stores no IP or user agent', async () => {
+    const r = await A.recordEvent(db, {
       t: 'view_item', sid: 'abcdefabcdef0123', p: '/product.html?p=rose-ring', pt: 'product', i: ' SJ-101\n',
       c: 'bridal\r\nline', k: { evil: true }, n: true, src: 'Instagram ', med: 'Social', cmp: 'Diwali\t2026',
       ref: 'https://L.Instagram.com/some/path?x=1', g: false,
     }, { ...meta, ua: UA.iphone });
     assert.deepEqual(r, { ok: true, source: 'instagram', device: 'mobile' });
-    const row = last();
+    const row = await last();
     assert.equal(row.type, 'view_item');
     assert.equal(row.path, '/product.html?p=rose-ring');
     assert.equal(row.page_type, 'product');
@@ -289,18 +314,19 @@ describe('analytics: recordEvent', () => {
     assert.equal(row.device, 'mobile');
     assert.equal(row.ts, new Date(BASE).toISOString());
     assert.equal(row.day, '2026-10-02');
-    const cols = db.raw.prepare('PRAGMA table_info(events)').all().map(c => c.name);
+    const cols = (await db.all('PRAGMA table_info(events)')).map(c => c.name);
+    assert.ok(cols.includes('sid'), 'positive control: the column list was read');
     for (const banned of ['ip', 'user_agent', 'ua']) assert.ok(!cols.includes(banned), `events must not have ${banned}`);
   });
 
-  it('marks gclid visits as google_ads and buckets days in Dubai time (UTC+4)', () => {
-    A.recordEvent(db, { t: 'page_view', sid: 'abcdefabcdef0123', g: 1 }, { ...meta, now: Date.parse('2026-10-01T20:00:00Z') });
-    let row = last();
+  it('marks gclid visits as google_ads and buckets days in Dubai time (UTC+4)', async () => {
+    await A.recordEvent(db, { t: 'page_view', sid: 'abcdefabcdef0123', g: 1 }, { ...meta, now: Date.parse('2026-10-01T20:00:00Z') });
+    let row = await last();
     assert.equal(row.source, 'google_ads');
     assert.equal(row.has_gclid, 1);
     assert.equal(row.day, '2026-10-02');
-    A.recordEvent(db, { t: 'page_view', sid: 'abcdefabcdef0123' }, { ...meta, now: Date.parse('2026-10-01T19:59:59Z') });
-    row = last();
+    await A.recordEvent(db, { t: 'page_view', sid: 'abcdefabcdef0123' }, { ...meta, now: Date.parse('2026-10-01T19:59:59Z') });
+    row = await last();
     assert.equal(row.day, '2026-10-01');
     assert.equal(row.source, 'direct');
   });
@@ -313,42 +339,42 @@ describe('analytics: trafficReport', () => {
     s1: 'a1a1a1a1a1a1a1a1', s2: 'b2b2b2b2b2b2b2b2', s3: 'c3c3c3c3c3c3c3c3', s4: 'd4d4d4d4d4d4d4d4',
     s5: 'e5e5e5e5e5e5e5e5', s6: 'f6f6f6f6f6f6f6f6', old: '0101010101010101',
   };
-  const ev = (dayOffset, ua, body) => {
-    const r = A.recordEvent(db, body, { ua, host: 'siroya.com', now: BASE + dayOffset * DAY });
+  const ev = async (dayOffset, ua, body) => {
+    const r = await A.recordEvent(db, body, { ua, host: 'siroya.com', now: BASE + dayOffset * DAY });
     assert.equal(r.ok, true, JSON.stringify(body));
   };
 
-  before(() => {
-    db = freshDb();
-    seedCatalog(db);
+  before(async () => {
+    db = await freshDb();
+    await seedCatalog(db);
     // Current 7 days: 2026-09-26 .. 2026-10-02
-    ev(0, UA.iphone, { t: 'page_view', sid: S.s1, p: '/', ref: 'https://www.google.com/', n: 1 });
-    ev(0, UA.iphone, { t: 'page_view', sid: S.s1, p: '/collection.html?c=bridal', ref: 'https://siroya.com/' });
-    ev(0, UA.iphone, { t: 'view_item_list', sid: S.s1, c: 'bridal', ref: 'https://siroya.com/' });
-    ev(0, UA.iphone, { t: 'view_item', sid: S.s1, i: 'SJ-101', ref: 'https://siroya.com/' });
-    ev(0, UA.iphone, { t: 'whatsapp_click', sid: S.s1, i: 'SJ-101', ref: 'https://siroya.com/' });
-    ev(-2, UA.desktop, { t: 'page_view', sid: S.s2, p: '/', src: 'instagram', med: 'social', cmp: 'diwali', n: 1 });
-    ev(-2, UA.desktop, { t: 'generate_lead', sid: S.s2, i: 'SJ-101', src: 'instagram', med: 'social', cmp: 'diwali' });
-    ev(-6, UA.ipad, { t: 'page_view', sid: S.s3, p: '/about.html', n: 0 });
-    ev(-6, UA.ipad, { t: 'page_view', sid: S.s3, p: '/product.html?p=rose-ring', g: true });
-    ev(-1, UA.mac, { t: 'page_view', sid: S.s4, p: '/product.html?p=rose-ring', ref: 'www.bing.com' });
-    ev(-1, UA.mac, { t: 'view_item', sid: S.s4, i: 'rose-ring', ref: 'siroya.com' });
-    ev(-1, UA.mac, { t: 'view_item_list', sid: S.s4, c: 'category-rings', ref: 'siroya.com' });
+    await ev(0, UA.iphone, { t: 'page_view', sid: S.s1, p: '/', ref: 'https://www.google.com/', n: 1 });
+    await ev(0, UA.iphone, { t: 'page_view', sid: S.s1, p: '/collection.html?c=bridal', ref: 'https://siroya.com/' });
+    await ev(0, UA.iphone, { t: 'view_item_list', sid: S.s1, c: 'bridal', ref: 'https://siroya.com/' });
+    await ev(0, UA.iphone, { t: 'view_item', sid: S.s1, i: 'SJ-101', ref: 'https://siroya.com/' });
+    await ev(0, UA.iphone, { t: 'whatsapp_click', sid: S.s1, i: 'SJ-101', ref: 'https://siroya.com/' });
+    await ev(-2, UA.desktop, { t: 'page_view', sid: S.s2, p: '/', src: 'instagram', med: 'social', cmp: 'diwali', n: 1 });
+    await ev(-2, UA.desktop, { t: 'generate_lead', sid: S.s2, i: 'SJ-101', src: 'instagram', med: 'social', cmp: 'diwali' });
+    await ev(-6, UA.ipad, { t: 'page_view', sid: S.s3, p: '/about.html', n: 0 });
+    await ev(-6, UA.ipad, { t: 'page_view', sid: S.s3, p: '/product.html?p=rose-ring', g: true });
+    await ev(-1, UA.mac, { t: 'page_view', sid: S.s4, p: '/product.html?p=rose-ring', ref: 'www.bing.com' });
+    await ev(-1, UA.mac, { t: 'view_item', sid: S.s4, i: 'rose-ring', ref: 'siroya.com' });
+    await ev(-1, UA.mac, { t: 'view_item_list', sid: S.s4, c: 'category-rings', ref: 'siroya.com' });
     // Previous 7 days: 2026-09-19 .. 2026-09-25
-    ev(-7, UA.desktop, { t: 'page_view', sid: S.s5, p: '/' });
-    ev(-7, UA.desktop, { t: 'whatsapp_click', sid: S.s5 });
-    ev(-13, UA.desktop, { t: 'page_view', sid: S.s6, p: '/' });
+    await ev(-7, UA.desktop, { t: 'page_view', sid: S.s5, p: '/' });
+    await ev(-7, UA.desktop, { t: 'whatsapp_click', sid: S.s5 });
+    await ev(-13, UA.desktop, { t: 'page_view', sid: S.s6, p: '/' });
     // Outside both periods
-    ev(-14, UA.desktop, { t: 'page_view', sid: S.old, p: '/' });
+    await ev(-14, UA.desktop, { t: 'page_view', sid: S.old, p: '/' });
 
-    insertLead(db, '2026-10-01T21:30:00.000Z'); // Dubai 2026-10-02 01:30 -> current
-    insertLead(db, '2026-09-25T20:00:00.000Z'); // Dubai 2026-09-26 00:00 -> current, first day
-    insertLead(db, '2026-09-25T19:59:59.000Z'); // Dubai 2026-09-25 23:59 -> previous
-    insertLead(db, '2026-09-18T19:00:00.000Z'); // Dubai 2026-09-18 -> outside
+    await insertLead(db, '2026-10-01T21:30:00.000Z'); // Dubai 2026-10-02 01:30 -> current
+    await insertLead(db, '2026-09-25T20:00:00.000Z'); // Dubai 2026-09-26 00:00 -> current, first day
+    await insertLead(db, '2026-09-25T19:59:59.000Z'); // Dubai 2026-09-25 23:59 -> previous
+    await insertLead(db, '2026-09-18T19:00:00.000Z'); // Dubai 2026-09-18 -> outside
 
     // The report covers complete days ending yesterday: taken the day after BASE,
     // its current period is 2026-09-26 .. 2026-10-02.
-    report = A.trafficReport(db, 7, { now: BASE + DAY });
+    report = await A.trafficReport(db, 7, { now: BASE + DAY });
   });
   after(() => db.close());
 
@@ -435,57 +461,64 @@ describe('analytics: trafficReport', () => {
     assert.deepEqual(byDay['2026-09-19'], { day: '2026-09-19', visitors: 1, page_views: 1, whatsapp_clicks: 0, leads: 0 });
   });
 
-  it('supports 30 and 90 day ranges and rejects others', () => {
-    const r30 = A.trafficReport(db, 30, { now: BASE + DAY });
+  it('supports 30 and 90 day ranges and rejects others', async () => {
+    const r30 = await A.trafficReport(db, 30, { now: BASE + DAY });
     assert.equal(r30.daily.length, 30);
     assert.equal(r30.from, '2026-09-03');
     assert.equal(r30.previous_to, '2026-09-02');
     assert.equal(r30.previous_from, '2026-08-04');
     assert.equal(r30.totals.visitors, 7);
     assert.equal(r30.totals.leads, 4);
-    const r90 = A.trafficReport(db, '90', { now: BASE + DAY });
+    const r90 = await A.trafficReport(db, '90', { now: BASE + DAY });
     assert.equal(r90.daily.length, 90);
     assert.equal(r90.daily[0].day, r90.from);
     assert.equal(r90.daily[89].day, '2026-10-02');
-    assert.throws(() => A.trafficReport(db, 14, { now: BASE + DAY }), err => err instanceof HttpError && err.status === 400);
+    await assert.rejects(A.trafficReport(db, 14, { now: BASE + DAY }), err => err instanceof HttpError && err.status === 400);
   });
 
-  it('returns zeros on an empty database', () => {
-    const empty = freshDb();
-    const r = A.trafficReport(empty, 7, { now: BASE });
+  it('returns zeros on an empty database', async () => {
+    const empty = await freshDb();
+    const r = await A.trafficReport(empty, 7, { now: BASE });
     assert.deepEqual(r.totals, { visitors: 0, page_views: 0, whatsapp_clicks: 0, leads: 0, conversion_rate: 0 });
     assert.deepEqual(r.today, { day: '2026-10-02', visitors: 0, page_views: 0, whatsapp_clicks: 0, leads: 0 });
     assert.equal(r.daily.length, 7);
     assert.ok(r.daily.every(d => d.visitors === 0 && d.leads === 0));
     assert.deepEqual(r.sources, []);
     assert.deepEqual(r.new_vs_returning, { new: 0, returning: 0 });
-    empty.close();
+    await empty.close();
   });
 });
 
 describe('analytics: retention', () => {
-  it('purges events older than 400 days', () => {
-    const db = freshDb();
-    const meta = d => ({ ua: UA.desktop, host: 'siroya.com', now: BASE - d * DAY });
-    A.recordEvent(db, { t: 'page_view', sid: '0123456789abcdef' }, meta(401));
-    A.recordEvent(db, { t: 'page_view', sid: '0123456789abcdef' }, meta(399));
-    A.recordEvent(db, { t: 'page_view', sid: '0123456789abcdef' }, meta(0));
-    assert.equal(A.purgeOld(db, { now: BASE }), 1);
-    assert.equal(db.stmt('SELECT COUNT(*) AS n FROM events').get().n, 2);
-    assert.equal(A.purgeOld(db, { now: BASE }), 0);
-    db.close();
+  it('purges events older than 400 days', async () => {
+    const db = await freshDb();
+    try {
+      const meta = d => ({ ua: UA.desktop, host: 'siroya.com', now: BASE - d * DAY });
+      await A.recordEvent(db, { t: 'page_view', sid: '0123456789abcdef' }, meta(401));
+      await A.recordEvent(db, { t: 'page_view', sid: '0123456789abcdef' }, meta(399));
+      await A.recordEvent(db, { t: 'page_view', sid: '0123456789abcdef' }, meta(0));
+      assert.equal(await A.purgeOld(db, { now: BASE }), 1);
+      assert.equal(await countEvents(db), 2);
+      assert.equal(await A.purgeOld(db, { now: BASE }), 0);
+    } finally {
+      await db.close();
+    }
   });
 
-  it('schema SQL is idempotent', () => {
-    const db = freshDb();
-    A.ensureAnalyticsSchema(db.raw);
-    A.ensureAnalyticsSchema(db);
-    db.raw.exec(A.ANALYTICS_SCHEMA_SQL);
-    const idx = db.raw.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'events'").all().map(r => r.name).sort();
-    assert.deepEqual(idx, ['events_day', 'events_sid_day', 'events_type_day']);
-    const tables = db.raw.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'events%'").all().map(r => r.name).sort();
-    assert.deepEqual(tables, ['events', 'events_daily', 'events_daily_dim']);
-    db.close();
+  it('schema SQL is idempotent', async () => {
+    const db = await freshDb();
+    try {
+      // any object with exec() works, as does the db wrapper itself
+      await A.ensureAnalyticsSchema({ exec: sql => db.exec(sql) });
+      await A.ensureAnalyticsSchema(db);
+      await db.exec(A.ANALYTICS_SCHEMA_SQL);
+      const idx = (await db.all("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'events'")).map(r => r.name).sort();
+      assert.deepEqual(idx, ['events_day', 'events_sid_day', 'events_type_day']);
+      const tables = (await db.all("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'events%'")).map(r => r.name).sort();
+      assert.deepEqual(tables, ['events', 'events_daily', 'events_daily_dim']);
+    } finally {
+      await db.close();
+    }
   });
 });
 
@@ -499,20 +532,21 @@ describe('api: /api/track and admin traffic routes', () => {
   let port;
   let registered;
   const AUTH = { 'X-Test-Auth': '1' };
-  const count = () => db.stmt('SELECT COUNT(*) AS n FROM events').get().n;
+  const count = () => countEvents(db);
 
   before(async () => {
-    db = freshDb();
-    seedCatalog(db);
+    db = await freshDb();
+    await seedCatalog(db);
     const router = new Router();
     registered = registerTraffic(router, { db, env: {}, trackLimiter: createLimiter({ limit: 6, windowMs: 60000 }) });
+    await registered.init();
     server = http.createServer(apiHarness(router, { isAuthed: req => req.headers['x-test-auth'] === '1' }));
     port = await listenInRange(server);
   });
   after(async () => {
-    registered.stop();
+    await registered.stop();
     await closeServer(server);
-    db.close();
+    await db.close();
   });
 
   const beacon = (body, { type = 'text/plain;charset=UTF-8', ua = UA.desktop } = {}) => request(port, 'POST', '/api/track', {
@@ -523,8 +557,8 @@ describe('api: /api/track and admin traffic routes', () => {
     const res = await beacon({ t: 'page_view', sid: '0123456789abcdef', p: '/', ref: 'www.google.com', n: 1 });
     assert.equal(res.status, 204);
     assert.equal(res.text, '');
-    assert.equal(count(), 1);
-    const row = db.stmt('SELECT * FROM events').get();
+    assert.equal(await count(), 1);
+    const row = await db.stmt('SELECT * FROM events').get();
     assert.equal(row.source, 'google_organic');
     assert.equal(row.device, 'desktop');
   });
@@ -532,15 +566,15 @@ describe('api: /api/track and admin traffic routes', () => {
   it('accepts application/json and treats own host referrers as direct', async () => {
     const res = await beacon({ t: 'view_item', sid: '0123456789abcdef', i: 'SJ-101', ref: 'siroya.com' }, { type: 'application/json' });
     assert.equal(res.status, 204);
-    assert.equal(db.stmt('SELECT source FROM events ORDER BY id DESC LIMIT 1').get().source, 'direct');
+    assert.equal((await db.stmt('SELECT source FROM events ORDER BY id DESC LIMIT 1').get()).source, 'direct');
   });
 
   it('answers 204 but stores nothing for bots and invalid events', async () => {
-    const before = count();
+    const before = await count();
     assert.equal((await beacon({ t: 'page_view', sid: '0123456789abcdef' }, { ua: 'Googlebot/2.1' })).status, 204);
     assert.equal((await beacon({ t: 'nope', sid: '0123456789abcdef' })).status, 204);
     assert.equal((await beacon({ t: 'page_view', sid: 'short' })).status, 204);
-    assert.equal(count(), before);
+    assert.equal(await count(), before);
   });
 
   it('rejects bodies over 4 KB with 413 and other content types with 415', async () => {
@@ -555,11 +589,11 @@ describe('api: /api/track and admin traffic routes', () => {
 
   it('rate limits per IP silently (still 204)', async () => {
     // limiter allows 6 per minute; 5 hits used above (2 stored + 3 dropped), 413/415 never reached the handler
-    const before = count();
+    const before = await count();
     assert.equal((await beacon({ t: 'page_view', sid: '0123456789abcdef' })).status, 204); // 6th: stored
     assert.equal((await beacon({ t: 'page_view', sid: '0123456789abcdef' })).status, 204); // 7th: dropped
     assert.equal((await beacon({ t: 'page_view', sid: '0123456789abcdef' })).status, 204); // 8th: dropped
-    assert.equal(count(), before + 1);
+    assert.equal(await count(), before + 1);
   });
 
   it('protects admin routes', async () => {
@@ -920,7 +954,7 @@ describe('google: client against a mock Google', () => {
   });
 
   it('reports not connected before a key is saved', async () => {
-    assert.deepEqual(keep(client.status()), {
+    assert.deepEqual(keep(await client.status()), {
       connected: false, client_email: '', gsc_site: '', ga4_property: '', connected_at: null, last_sync: null, last_error: '',
     });
     await expectReject(client.searchReport(28), err => err.status === 409 && err.data.code === 'not_connected' && err.message === 'Google is not connected');
@@ -929,8 +963,8 @@ describe('google: client against a mock Google', () => {
     assert.equal(mock.state.hits.token, 0);
   });
 
-  it('saves the key and settings; status never includes the private key', () => {
-    const st = keep(client.save({
+  it('saves the key and settings; status never includes the private key', async () => {
+    const st = keep(await client.save({
       service_account_json: JSON.stringify(serviceAccount()),
       gsc_site: 'sc-domain:Siroya.com',
       ga4_property: 'properties/123456',
@@ -1001,7 +1035,7 @@ describe('google: client against a mock Google', () => {
     assert.equal(mock.state.gscBodies.find(b => b.body.dimensions[0] === 'query').body.rowLimit, 50);
     assert.equal(mock.state.gscBodies.find(b => b.body.dimensions[0] === 'page').body.rowLimit, 25);
     assert.equal(mock.state.hits.token, 1, 'the access token is reused');
-    const st = client.status();
+    const st = await client.status();
     assert.equal(st.last_sync, new Date(BASE).toISOString());
     assert.equal(st.last_error, '');
   });
@@ -1090,7 +1124,7 @@ describe('google: client against a mock Google', () => {
       assert.equal(r.cached, true);
       assert.match(r.error, /Google is having trouble right now \(HTTP 503\)/);
       assert.equal(r.totals.clicks, 120);
-      assert.match(client.status().last_error, /HTTP 503/);
+      assert.match((await client.status()).last_error, /HTTP 503/);
       await expectReject(client.searchReport(90), err => err.status === 502 && err.data.code === 'google_unavailable');
     } finally {
       mock.state.failGsc = 0;
@@ -1098,46 +1132,46 @@ describe('google: client against a mock Google', () => {
   });
 
   it('turns a Search Console 403 into a friendly message', async () => {
-    client.save({ gsc_site: 'sc-domain:noaccess.com' });
+    await client.save({ gsc_site: 'sc-domain:noaccess.com' });
     await expectReject(client.searchReport(7), err => {
       assert.equal(err.status, 502);
       assert.equal(err.data.code, 'google_permission');
       assert.equal(err.message, `The service account has no access to sc-domain:noaccess.com. Add ${CLIENT_EMAIL} as a user in Search Console (Settings > Users and permissions; Restricted is enough).`);
       return true;
     });
-    assert.match(client.status().last_error, /no access to sc-domain:noaccess\.com/);
+    assert.match((await client.status()).last_error, /no access to sc-domain:noaccess\.com/);
     const t = keep(await client.test());
     assert.equal(t.ok, false);
     assert.equal(t.gsc_ok, false);
     assert.equal(t.ga4_ok, true);
     assert.match(t.error, new RegExp(`Add ${CLIENT_EMAIL.replace(/[.]/g, '\\.')} as a user in Search Console`));
-    client.save({ gsc_site: 'sc-domain:siroya.com' });
+    await client.save({ gsc_site: 'sc-domain:siroya.com' });
   });
 
   it('turns GA4 403 / 404 / disabled API into friendly messages', async () => {
-    client.save({ ga4_property: '999' });
+    await client.save({ ga4_property: '999' });
     await expectReject(client.analyticsReport(7), err => err.status === 502 && err.data.code === 'google_permission'
       && err.message.includes(`Add ${CLIENT_EMAIL} as a Viewer in Google Analytics`) && err.message.includes('GA4 property 999'));
-    client.save({ ga4_property: '404' });
+    await client.save({ ga4_property: '404' });
     await expectReject(client.analyticsReport(7), err => err.data.code === 'google_not_found' && /GA4 property 404 was not found/.test(err.message));
-    client.save({ ga4_property: '555' });
+    await client.save({ ga4_property: '555' });
     await expectReject(client.analyticsReport(7), err => err.data.code === 'google_api_disabled' && /enable "Google Analytics Data API"/.test(err.message));
-    client.save({ ga4_property: '123456' });
+    await client.save({ ga4_property: '123456' });
   });
 
   it('times out slow Google requests', async () => {
     const quick = G.createGoogleClient({ getSetting: settings.getSetting, setSetting: settings.setSetting, now, timeoutMs: 300 });
-    quick.save({ ga4_property: '777' });
+    await quick.save({ ga4_property: '777' });
     const started = Date.now();
     await expectReject(quick.analyticsReport(7), err => err.status === 504 && err.data.code === 'google_timeout');
     assert.ok(Date.now() - started < 5000);
-    quick.save({ ga4_property: '123456' });
+    await quick.save({ ga4_property: '123456' });
   });
 
   it('reports a key Google rejects (bad signature) without throwing from test()', async () => {
     const other = memorySettings();
     const wrong = G.createGoogleClient({ getSetting: other.getSetting, setSetting: other.setSetting, now });
-    wrong.save({ service_account_json: serviceAccount(OTHER_KEYS.privateKey), gsc_site: 'sc-domain:siroya.com' });
+    await wrong.save({ service_account_json: serviceAccount(OTHER_KEYS.privateKey), gsc_site: 'sc-domain:siroya.com' });
     const r = keep(await wrong.test());
     assert.equal(r.ok, false);
     assert.match(r.error, /rejected the key signature/);
@@ -1145,7 +1179,7 @@ describe('google: client against a mock Google', () => {
   });
 
   it('disconnect wipes the key, token and cached data', async () => {
-    const st = keep(client.disconnect());
+    const st = keep(await client.disconnect());
     assert.equal(st.connected, false);
     assert.equal(st.client_email, '');
     assert.equal(st.gsc_site, 'sc-domain:siroya.com');
@@ -1172,13 +1206,13 @@ describe('google: client against a mock Google', () => {
 
 describe('analytics: input hardening', () => {
   let db;
-  before(() => { db = freshDb(); });
+  before(async () => { db = await freshDb(); });
   after(() => db.close());
   const meta = { ua: UA.desktop, host: 'siroya.com', now: BASE };
   const last = () => db.stmt('SELECT * FROM events ORDER BY id DESC LIMIT 1').get();
   const sid = 'aaaabbbbccccdddd';
 
-  it('rebuilds the path: a page name plus one slug-checked ?p= or ?c=', () => {
+  it('rebuilds the path: a page name plus one slug-checked ?p= or ?c=', async () => {
     const cases = [
       ['/', '/'],
       ['/index.html', '/'],
@@ -1206,51 +1240,51 @@ describe('analytics: input hardening', () => {
     for (const [input, expected] of cases) assert.equal(A.cleanPath(input), expected, JSON.stringify(input));
   });
 
-  it('never stores another site as a page path', () => {
-    A.recordEvent(db, { t: 'page_view', sid, p: 'https://evil.example/collection.html?c=sanskriti' }, meta);
-    assert.equal(last().path, '');
+  it('never stores another site as a page path', async () => {
+    await A.recordEvent(db, { t: 'page_view', sid, p: 'https://evil.example/collection.html?c=sanskriti' }, meta);
+    assert.equal((await last()).path, '');
   });
 
-  it('removes bidi overrides and zero-width characters', () => {
-    A.recordEvent(db, { t: 'page_view', sid, cmp: 'summer‮gnp.exe', src: 'insta​gram' }, meta);
-    const row = last();
+  it('removes bidi overrides and zero-width characters', async () => {
+    await A.recordEvent(db, { t: 'page_view', sid, cmp: 'summer‮gnp.exe', src: 'insta​gram' }, meta);
+    const row = await last();
     assert.equal(row.campaign, 'summergnp.exe');
     assert.equal(row.source, 'instagram');
   });
 
-  it('removes e-mail addresses and long digit runs from free text', () => {
-    A.recordEvent(db, { t: 'page_view', sid, cmp: 'jane.doe@example.com', p: '/?c=jane.doe@example.com' }, meta);
-    let row = last();
+  it('removes e-mail addresses and long digit runs from free text', async () => {
+    await A.recordEvent(db, { t: 'page_view', sid, cmp: 'jane.doe@example.com', p: '/?c=jane.doe@example.com' }, meta);
+    let row = await last();
     assert.equal(row.campaign, '[hidden]');
     assert.equal(row.path, '/');
-    A.recordEvent(db, { t: 'page_view', sid, cmp: 'promo-0501234567 spring', med: 'email jane@example.com' }, meta);
-    row = last();
+    await A.recordEvent(db, { t: 'page_view', sid, cmp: 'promo-0501234567 spring', med: 'email jane@example.com' }, meta);
+    row = await last();
     assert.equal(row.campaign, 'promo-[hidden] spring');
     assert.ok(!row.medium.includes('@'));
-    A.recordEvent(db, { t: 'view_item', sid, i: 'jane@example.com', c: '1234567', k: 'rings' }, meta);
-    row = last();
+    await A.recordEvent(db, { t: 'view_item', sid, i: 'jane@example.com', c: '1234567', k: 'rings' }, meta);
+    row = await last();
     assert.equal(row.item, '');
     assert.equal(row.collection, '');
     assert.equal(row.category, 'rings');
-    A.recordEvent(db, { t: 'page_view', sid, src: 'jane@example.com' }, meta);
-    assert.equal(last().source, 'direct', 'a personal utm_source is not used as the source name');
+    await A.recordEvent(db, { t: 'page_view', sid, src: 'jane@example.com' }, meta);
+    assert.equal((await last()).source, 'direct', 'a personal utm_source is not used as the source name');
   });
 
-  it('keeps product codes and names as items, slugs as collections and categories', () => {
-    A.recordEvent(db, { t: 'view_item', sid, i: 'SJ-SAN-1040', c: 'sanskriti', k: 'necklaces', pt: 'product' }, meta);
-    let row = last();
+  it('keeps product codes and names as items, slugs as collections and categories', async () => {
+    await A.recordEvent(db, { t: 'view_item', sid, i: 'SJ-SAN-1040', c: 'sanskriti', k: 'necklaces', pt: 'product' }, meta);
+    let row = await last();
     assert.deepEqual([row.item, row.collection, row.category, row.page_type], ['SJ-SAN-1040', 'sanskriti', 'necklaces', 'product']);
-    A.recordEvent(db, { t: 'view_item', sid, i: 'Rose Ring', c: 'bridal line', pt: 'pro duct' }, meta);
-    row = last();
+    await A.recordEvent(db, { t: 'view_item', sid, i: 'Rose Ring', c: 'bridal line', pt: 'pro duct' }, meta);
+    row = await last();
     assert.deepEqual([row.item, row.collection, row.page_type], ['Rose Ring', '', '']);
   });
 
-  it('never uses a built-in object property name as a source', () => {
+  it('never uses a built-in object property name as a source', async () => {
     for (const src of ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'prototype', 'valueOf', '__defineGetter__']) {
       assert.equal(A.deriveSource({ source: src }), 'direct', src);
       assert.equal(A.deriveSource({ source: src, refHost: 'www.google.com' }), 'google_organic', src);
-      A.recordEvent(db, { t: 'page_view', sid, src }, meta);
-      assert.equal(last().source, 'direct', src);
+      await A.recordEvent(db, { t: 'page_view', sid, src }, meta);
+      assert.equal((await last()).source, 'direct', src);
     }
     assert.equal(A.deriveSource({ source: 'IG_Story' }), 'ig_story');
     assert.equal(A.deriveSource({ source: 'x'.repeat(61), refHost: 'box.com' }), 'referral');
@@ -1259,141 +1293,255 @@ describe('analytics: input hardening', () => {
 });
 
 describe('analytics: write caps', () => {
-  it('stores at most 300 events per session per day', () => {
-    const db = freshDb();
-    const meta = { ua: UA.desktop, host: 'siroya.com', now: BASE };
-    const sid = '1111222233334444';
-    assert.equal(A.MAX_EVENTS_PER_SESSION_DAY, 300);
-    for (let i = 0; i < 300; i++) assert.equal(A.recordEvent(db, { t: 'page_view', sid, p: '/' }, meta).ok, true);
-    assert.deepEqual(A.recordEvent(db, { t: 'page_view', sid, p: '/' }, meta), { ok: false, reason: 'session_cap' });
-    assert.equal(A.recordEvent(db, { t: 'page_view', sid: '5555666677778888' }, meta).ok, true, 'another session is not affected');
-    assert.equal(A.recordEvent(db, { t: 'page_view', sid }, { ...meta, now: BASE + DAY }).ok, true, 'the next day starts again');
-    assert.equal(db.stmt('SELECT COUNT(*) AS n FROM events WHERE sid = ?').get(sid).n, 301);
-    db.close();
+  it('stores at most 300 events per session per day', async () => {
+    const db = await freshDb();
+    try {
+      const meta = { ua: UA.desktop, host: 'siroya.com', now: BASE };
+      const sid = '1111222233334444';
+      assert.equal(A.MAX_EVENTS_PER_SESSION_DAY, 300);
+      for (let i = 0; i < 300; i++) assert.equal((await A.recordEvent(db, { t: 'page_view', sid, p: '/' }, meta)).ok, true);
+      assert.deepEqual(await A.recordEvent(db, { t: 'page_view', sid, p: '/' }, meta), { ok: false, reason: 'session_cap' });
+      assert.equal((await A.recordEvent(db, { t: 'page_view', sid: '5555666677778888' }, meta)).ok, true, 'another session is not affected');
+      assert.equal((await A.recordEvent(db, { t: 'page_view', sid }, { ...meta, now: BASE + DAY })).ok, true, 'the next day starts again');
+      assert.equal((await db.stmt('SELECT COUNT(*) AS n FROM events WHERE sid = ?').get(sid)).n, 301);
+    } finally {
+      await db.close();
+    }
   });
 
-  it('caps the whole site per Dubai day, counting from the database after a restart', () => {
-    const db = freshDb();
-    assert.equal(A.MAX_EVENTS_PER_DAY, 50000);
-    const meta = { ua: UA.desktop, host: 'siroya.com', now: BASE };
-    const rec = A.createEventRecorder(db, { maxPerDay: 5 });
-    const sidN = i => crypto.createHash('md5').update(String(i)).digest('hex').slice(0, 16);
-    assert.equal(rec.record({ t: 'nope', sid: sidN(0) }, meta).reason, 'invalid_type', 'dropped events do not count');
-    for (let i = 0; i < 5; i++) assert.equal(rec.record({ t: 'page_view', sid: sidN(i) }, meta).ok, true);
-    assert.deepEqual(rec.record({ t: 'page_view', sid: sidN(9) }, meta), { ok: false, reason: 'daily_cap' });
-    assert.equal(rec.count(), 5);
-    const restarted = A.createEventRecorder(db, { maxPerDay: 5 });
-    assert.equal(restarted.record({ t: 'page_view', sid: sidN(9) }, meta).reason, 'daily_cap');
-    assert.equal(restarted.record({ t: 'page_view', sid: sidN(9) }, { ...meta, now: BASE + DAY }).ok, true, 'the next Dubai day starts again');
-    assert.equal(db.stmt('SELECT COUNT(*) AS n FROM events').get().n, 6);
-    db.close();
+  it('holds the session cap when events of one session arrive at once', async () => {
+    const db = await freshDb();
+    try {
+      const meta = { ua: UA.desktop, host: 'siroya.com', now: BASE };
+      const sid = '9999aaaabbbbcccc';
+      const results = await Promise.all(Array.from({ length: 12 }, () => A.recordEvent(db, { t: 'page_view', sid }, { ...meta, maxPerSession: 5 })));
+      assert.equal(results.filter(r => r.ok).length, 5);
+      assert.equal(results.filter(r => r.reason === 'session_cap').length, 7);
+      assert.equal((await db.stmt('SELECT COUNT(*) AS n FROM events WHERE sid = ?').get(sid)).n, 5);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('caps the whole site per Dubai day, counting from the database after a restart', async () => {
+    const db = await freshDb();
+    try {
+      assert.equal(A.MAX_EVENTS_PER_DAY, 50000);
+      const meta = { ua: UA.desktop, host: 'siroya.com', now: BASE };
+      const rec = A.createEventRecorder(db, { maxPerDay: 5 });
+      const sidN = i => crypto.createHash('md5').update(String(i)).digest('hex').slice(0, 16);
+      assert.equal((await rec.record({ t: 'nope', sid: sidN(0) }, meta)).reason, 'invalid_type', 'dropped events do not count');
+      for (let i = 0; i < 5; i++) assert.equal((await rec.record({ t: 'page_view', sid: sidN(i) }, meta)).ok, true);
+      assert.deepEqual(await rec.record({ t: 'page_view', sid: sidN(9) }, meta), { ok: false, reason: 'daily_cap' });
+      assert.equal(rec.count(), 5);
+      const restarted = A.createEventRecorder(db, { maxPerDay: 5 });
+      assert.equal((await restarted.record({ t: 'page_view', sid: sidN(9) }, meta)).reason, 'daily_cap');
+      assert.equal((await restarted.record({ t: 'page_view', sid: sidN(9) }, { ...meta, now: BASE + DAY })).ok, true, 'the next Dubai day starts again');
+      assert.equal(await countEvents(db), 6);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('holds the daily cap when events arrive at once', async () => {
+    const db = await freshDb();
+    try {
+      const meta = { ua: UA.desktop, host: 'siroya.com', now: BASE };
+      const rec = A.createEventRecorder(db, { maxPerDay: 5 });
+      const sidN = i => crypto.createHash('md5').update(`c${i}`).digest('hex').slice(0, 16);
+      const results = await Promise.all(Array.from({ length: 12 }, (_, i) => rec.record({ t: 'page_view', sid: sidN(i) }, meta)));
+      assert.equal(results.filter(r => r.ok).length, 5);
+      assert.equal(results.filter(r => r.reason === 'daily_cap').length, 7);
+      assert.equal(rec.count(), 5);
+      assert.equal(await countEvents(db), 5);
+    } finally {
+      await db.close();
+    }
   });
 });
 
 describe('analytics: daily rollups', () => {
   const meta = d => ({ ua: UA.desktop, host: 'siroya.com', now: BASE + d * DAY });
 
-  it('reports from rollups, not from the raw events of closed days', () => {
-    const db = freshDb();
-    A.recordEvent(db, { t: 'page_view', sid: '0123456789abcdef', p: '/' }, meta(-1));
-    A.recordEvent(db, { t: 'whatsapp_click', sid: '0123456789abcdef' }, meta(-1));
-    const first = A.trafficReport(db, 7, { now: BASE });
-    assert.equal(first.to, '2026-10-01');
-    assert.deepEqual(first.totals, { visitors: 1, page_views: 1, whatsapp_clicks: 1, leads: 0, conversion_rate: 1 });
-    // The raw rows of a closed day are no longer read once its rollup exists.
-    db.raw.exec("DELETE FROM events WHERE day = '2026-10-01'");
-    const second = A.trafficReport(db, 7, { now: BASE });
-    assert.deepEqual(second.totals, first.totals);
-    assert.deepEqual(second.top_pages, [{ path: '/', views: 1, visitors: 1 }]);
-    assert.equal(A.missingDays(db, '2026-09-18', '2026-10-01').length, 0, 'every day of both periods is rolled up');
-    db.close();
-  });
+  const n = async (db, sql, ...args) => (await db.stmt(sql).get(...args)).n;
 
-  it('rebuilds a day when a late event lands on it', () => {
-    const db = freshDb();
-    A.recordEvent(db, { t: 'page_view', sid: '0123456789abcdef', p: '/' }, meta(-1));
-    assert.equal(A.trafficReport(db, 7, { now: BASE }).totals.page_views, 1);
-    A.recordEvent(db, { t: 'page_view', sid: '0123456789abcdef', p: '/about.html' }, meta(-1));
-    const r = A.trafficReport(db, 7, { now: BASE });
-    assert.equal(r.totals.page_views, 2);
-    assert.equal(r.top_pages.length, 2);
-    db.close();
-  });
-
-  it('shows today separately, live', () => {
-    const db = freshDb();
-    A.recordEvent(db, { t: 'page_view', sid: '0123456789abcdef', p: '/' }, meta(0));
-    A.recordEvent(db, { t: 'whatsapp_click', sid: '0123456789abcdef' }, meta(0));
-    A.recordEvent(db, { t: 'page_view', sid: 'fedcba9876543210', p: '/' }, meta(0));
-    insertLead(db, new Date(BASE).toISOString());
-    const r = A.trafficReport(db, 7, { now: BASE });
-    assert.equal(r.totals.visitors, 0, 'today is not a complete day yet');
-    assert.deepEqual(r.today, { day: '2026-10-02', visitors: 2, page_views: 2, whatsapp_clicks: 1, leads: 1 });
-    assert.equal(A.missingDays(db, '2026-10-02', '2026-10-02').length, 1, 'today is never rolled up');
-    db.close();
-  });
-
-  it('keeps at most 200 keys per dimension per day', () => {
-    const db = freshDb();
-    for (let i = 0; i < 230; i++) A.recordEvent(db, { t: 'page_view', sid: crypto.randomBytes(8).toString('hex'), p: `/p${i}.html` }, meta(-1));
-    A.trafficReport(db, 7, { now: BASE });
-    const kept = db.stmt("SELECT COUNT(*) AS n FROM events_daily_dim WHERE dim = 'page' AND day = '2026-10-01'").get().n;
-    assert.equal(kept, 200);
-    assert.equal(A.trafficReport(db, 7, { now: BASE }).totals.page_views, 230, 'totals still count every event');
-    db.close();
-  });
-
-  it('builds the missing rollups at start-up without waiting for other activity', async () => {
-    const db = freshDb();
-    A.recordEvent(db, { t: 'page_view', sid: '0123456789abcdef', p: '/' }, { ua: UA.desktop, now: Date.now() - DAY });
-    const registered = registerTraffic(new Router(), { db, env: {} });
+  it('reports from rollups, not from the raw events of closed days', async () => {
+    const db = await freshDb();
     try {
-      const started = Date.now();
-      // Only a slow timer wakes the loop here: the maintenance chain must drive itself
-      // (unref'd immediates would advance one day per wake-up, far too slow).
-      while (db.stmt('SELECT COUNT(*) AS n FROM events_daily').get().n < 180 && Date.now() - started < 3000) {
-        await new Promise(resolve => setTimeout(resolve, 50));
-      }
-      assert.equal(db.stmt('SELECT COUNT(*) AS n FROM events_daily').get().n, 180);
-      const y = A.addDays(A.dubaiDay(Date.now()), -1);
-      assert.equal(db.stmt('SELECT page_views FROM events_daily WHERE day = ?').get(y).page_views, 1);
+      await A.recordEvent(db, { t: 'page_view', sid: '0123456789abcdef', p: '/' }, meta(-1));
+      await A.recordEvent(db, { t: 'whatsapp_click', sid: '0123456789abcdef' }, meta(-1));
+      const first = await A.trafficReport(db, 7, { now: BASE });
+      assert.equal(first.to, '2026-10-01');
+      assert.deepEqual(first.totals, { visitors: 1, page_views: 1, whatsapp_clicks: 1, leads: 0, conversion_rate: 1 });
+      // The raw rows of a closed day are no longer read once its rollup exists.
+      await db.exec("DELETE FROM events WHERE day = '2026-10-01'");
+      const second = await A.trafficReport(db, 7, { now: BASE });
+      assert.deepEqual(second.totals, first.totals);
+      assert.deepEqual(second.top_pages, [{ path: '/', views: 1, visitors: 1 }]);
+      assert.equal((await A.missingDays(db, '2026-09-18', '2026-10-01')).length, 0, 'every day of both periods is rolled up');
     } finally {
-      registered.stop();
-      db.close();
+      await db.close();
     }
   });
 
-  it('purges rollups with the events after 400 days', () => {
-    const db = freshDb();
-    A.recordEvent(db, { t: 'page_view', sid: '0123456789abcdef', p: '/' }, meta(-395));
-    A.trafficReport(db, 90, { now: BASE - 300 * DAY });
-    assert.ok(db.stmt('SELECT COUNT(*) AS n FROM events_daily').get().n > 0);
-    A.purgeOld(db, { now: BASE + 10 * DAY });
-    assert.equal(db.stmt('SELECT COUNT(*) AS n FROM events').get().n, 0);
-    assert.equal(db.stmt("SELECT COUNT(*) AS n FROM events_daily WHERE day < '2025-09-07'").get().n, 0);
-    assert.equal(db.stmt("SELECT COUNT(*) AS n FROM events_daily_dim WHERE day < '2025-09-07'").get().n, 0);
-    db.close();
+  it('rebuilds a day when a late event lands on it', async () => {
+    const db = await freshDb();
+    try {
+      await A.recordEvent(db, { t: 'page_view', sid: '0123456789abcdef', p: '/' }, meta(-1));
+      assert.equal((await A.trafficReport(db, 7, { now: BASE })).totals.page_views, 1);
+      await A.recordEvent(db, { t: 'page_view', sid: '0123456789abcdef', p: '/about.html' }, meta(-1));
+      const r = await A.trafficReport(db, 7, { now: BASE });
+      assert.equal(r.totals.page_views, 2);
+      assert.equal(r.top_pages.length, 2);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('does not mark a day built when an event lands on it while it is being built', async () => {
+    const db = await freshDb();
+    try {
+      await A.recordEvent(db, { t: 'page_view', sid: '0123456789abcdef', p: '/' }, meta(-1));
+      // A db whose first read (the day's event count) lets a late event in right after it.
+      let injected = false;
+      const racing = {
+        ...db,
+        stmt: sql => {
+          const s = db.stmt(sql);
+          return {
+            ...s,
+            get: async (...args) => {
+              const row = await s.get(...args);
+              if (!injected) {
+                injected = true;
+                await A.recordEvent(db, { t: 'page_view', sid: '0123456789abcdef', p: '/about.html' }, meta(-1));
+              }
+              return row;
+            },
+          };
+        },
+      };
+      await A.buildDay(racing, '2026-10-01', { now: BASE });
+      assert.equal(injected, true);
+      assert.deepEqual(await A.missingDays(db, '2026-10-01', '2026-10-01'), ['2026-10-01'], 'left for a rebuild');
+      const r = await A.trafficReport(db, 7, { now: BASE });
+      assert.equal(r.totals.page_views, 2, 'the rebuild counts both events');
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('shows today separately, live', async () => {
+    const db = await freshDb();
+    try {
+      await A.recordEvent(db, { t: 'page_view', sid: '0123456789abcdef', p: '/' }, meta(0));
+      await A.recordEvent(db, { t: 'whatsapp_click', sid: '0123456789abcdef' }, meta(0));
+      await A.recordEvent(db, { t: 'page_view', sid: 'fedcba9876543210', p: '/' }, meta(0));
+      await insertLead(db, new Date(BASE).toISOString());
+      const r = await A.trafficReport(db, 7, { now: BASE });
+      assert.equal(r.totals.visitors, 0, 'today is not a complete day yet');
+      assert.deepEqual(r.today, { day: '2026-10-02', visitors: 2, page_views: 2, whatsapp_clicks: 1, leads: 1 });
+      assert.deepEqual(await A.todaySummary(db, { now: BASE }), r.today);
+      assert.equal((await A.missingDays(db, '2026-10-02', '2026-10-02')).length, 1, 'today is never rolled up');
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('keeps at most 200 keys per dimension per day', async () => {
+    const db = await freshDb();
+    try {
+      for (let i = 0; i < 230; i++) await A.recordEvent(db, { t: 'page_view', sid: crypto.randomBytes(8).toString('hex'), p: `/p${i}.html` }, meta(-1));
+      await A.trafficReport(db, 7, { now: BASE });
+      const kept = await n(db, "SELECT COUNT(*) AS n FROM events_daily_dim WHERE dim = 'page' AND day = '2026-10-01'");
+      assert.equal(kept, 200);
+      assert.equal((await A.trafficReport(db, 7, { now: BASE })).totals.page_views, 230, 'totals still count every event');
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('builds the missing rollups at start-up without waiting for other activity', async () => {
+    const db = await freshDb();
+    await A.recordEvent(db, { t: 'page_view', sid: '0123456789abcdef', p: '/' }, { ua: UA.desktop, now: Date.now() - DAY });
+    const registered = registerTraffic(new Router(), { db, env: {} });
+    try {
+      await registered.init();
+      const started = Date.now();
+      // Only a slow timer wakes the loop here: the maintenance chain must drive itself.
+      while (await n(db, 'SELECT COUNT(*) AS n FROM events_daily') < 180 && Date.now() - started < 3000) {
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      assert.equal(await n(db, 'SELECT COUNT(*) AS n FROM events_daily'), 180);
+      const y = A.addDays(A.dubaiDay(Date.now()), -1);
+      assert.equal((await db.stmt('SELECT page_views FROM events_daily WHERE day = ?').get(y)).page_views, 1);
+    } finally {
+      await registered.stop();
+      await db.close();
+    }
+  });
+
+  it('serverless mode: registering and init() start nothing; maintain() does the work', async () => {
+    const db = await freshDb();
+    const logs = [];
+    const log = console.log;
+    console.log = (...args) => { logs.push(args.join(' ')); };
+    const registered = registerTraffic(new Router(), { db, env: {}, timers: false });
+    try {
+      await A.recordEvent(db, { t: 'page_view', sid: '0123456789abcdef', p: '/' }, { ua: UA.desktop, now: Date.now() - DAY });
+      await A.recordEvent(db, { t: 'page_view', sid: '0123456789abcdef', p: '/' }, { ua: UA.desktop, now: Date.now() - 401 * DAY });
+      const p = registered.init();
+      assert.equal(registered.init(), p, 'init is idempotent');
+      await p;
+      await new Promise(resolve => setTimeout(resolve, 50));
+      assert.equal(await n(db, 'SELECT COUNT(*) AS n FROM events_daily'), 0, 'no background maintenance');
+      const result = await registered.maintain();
+      assert.deepEqual(result, { removed: 1, built: 180 });
+      assert.equal(await n(db, 'SELECT COUNT(*) AS n FROM events_daily'), 180);
+      assert.deepEqual(await registered.maintain(), { removed: 0, built: 0 }, 'nothing left to do');
+      assert.ok(logs.some(l => /removed 1 events older than 400 days/.test(l)));
+    } finally {
+      console.log = log;
+      await registered.stop();
+      await db.close();
+    }
+  });
+
+  it('purges rollups with the events after 400 days', async () => {
+    const db = await freshDb();
+    try {
+      await A.recordEvent(db, { t: 'page_view', sid: '0123456789abcdef', p: '/' }, meta(-395));
+      await A.trafficReport(db, 90, { now: BASE - 300 * DAY });
+      assert.ok(await n(db, 'SELECT COUNT(*) AS n FROM events_daily') > 0);
+      await A.purgeOld(db, { now: BASE + 10 * DAY });
+      assert.equal(await n(db, 'SELECT COUNT(*) AS n FROM events'), 0);
+      assert.equal(await n(db, "SELECT COUNT(*) AS n FROM events_daily WHERE day < '2025-09-07'"), 0);
+      assert.equal(await n(db, "SELECT COUNT(*) AS n FROM events_daily_dim WHERE day < '2025-09-07'"), 0);
+    } finally {
+      await db.close();
+    }
   });
 });
 
 describe('api: beacon hardening', () => {
   const started = [];
   async function start({ env = {}, perIp = 3, global = 100, beaconPatch = true } = {}) {
-    const db = freshDb();
+    const db = await freshDb();
     const router = new Router();
     const registered = registerTraffic(router, {
       db, env, purge: false,
       trackLimiter: createLimiter({ limit: perIp, windowMs: 60000 }),
       globalLimiter: createLimiter({ limit: global, windowMs: 60000 }),
     });
+    await registered.init();
     const server = http.createServer(apiHarness(router, { isAuthed: () => true, beaconPatch }));
     const port = await listenInRange(server);
-    const ctx = { db, port, registered, server, count: () => db.stmt('SELECT COUNT(*) AS n FROM events').get().n };
+    const ctx = { db, port, registered, server, count: () => countEvents(db) };
     started.push(ctx);
     return ctx;
   }
   after(async () => {
-    for (const c of started) { c.registered.stop(); await closeServer(c.server); c.db.close(); }
+    for (const c of started) { await c.registered.stop(); await closeServer(c.server); await c.db.close(); }
   });
   const beacon = (port, headers = {}, body = { t: 'page_view', sid: crypto.randomBytes(8).toString('hex'), p: '/' }) => request(port, 'POST', '/api/track', {
     body, headers: { 'Content-Type': 'text/plain;charset=UTF-8', 'User-Agent': UA.desktop, Host: 'siroya.com', ...headers },
@@ -1425,27 +1573,27 @@ describe('api: beacon hardening', () => {
       const res = await beacon(c.port, { 'X-Forwarded-For': `${crypto.randomInt(1, 223)}.${crypto.randomInt(255)}.0.${i}, 203.0.113.7` });
       assert.equal(res.status, 204);
     }
-    assert.equal(c.count(), 3, 'all six came through one proxy hop from 203.0.113.7');
+    assert.equal(await c.count(), 3, 'all six came through one proxy hop from 203.0.113.7');
     await beacon(c.port, { 'X-Forwarded-For': '2001:db8:1:2::1' });
     await beacon(c.port, { 'X-Forwarded-For': '2001:db8:1:2:aaaa::2' });
     await beacon(c.port, { 'X-Forwarded-For': '2001:db8:1:2:bbbb::3' });
     await beacon(c.port, { 'X-Forwarded-For': '2001:db8:1:2:cccc::4' });
-    assert.equal(c.count(), 6, 'one IPv6 /64 is one client');
+    assert.equal(await c.count(), 6, 'one IPv6 /64 is one client');
   });
 
   it('caps the whole site per minute', async () => {
     const c = await start({ env: { TRUST_PROXY: true }, perIp: 100, global: 5 });
     for (let i = 0; i < 9; i++) await beacon(c.port, { 'X-Forwarded-For': `198.51.100.${i}` });
-    assert.equal(c.count(), 5);
+    assert.equal(await c.count(), 5);
   });
 
   it('stores nothing with Do Not Track or Global Privacy Control', async () => {
     const c = await start();
     assert.equal((await beacon(c.port, { DNT: '1' })).status, 204);
     assert.equal((await beacon(c.port, { 'Sec-GPC': '1' })).status, 204);
-    assert.equal(c.count(), 0);
+    assert.equal(await c.count(), 0);
     await beacon(c.port, { DNT: '0' });
-    assert.equal(c.count(), 1);
+    assert.equal(await c.count(), 1);
   });
 
   it('refuses beacons posted from other sites', async () => {
@@ -1453,23 +1601,23 @@ describe('api: beacon hardening', () => {
     for (const origin of ['https://evil.example', 'null', 'https://siroya.com.evil.example', 'not a url']) {
       assert.equal((await beacon(c.port, { Origin: origin, Referer: 'https://evil.example/page' })).status, 204, origin);
     }
-    assert.equal(c.count(), 0);
+    assert.equal(await c.count(), 0);
     await beacon(c.port, { Origin: 'https://siroya.com' });
     await beacon(c.port, { Origin: 'https://www.siroya.com', Host: 'siroya.com:5173' });
     await beacon(c.port, {});
-    assert.equal(c.count(), 3, 'own origin (www or not, any port) and no Origin at all are accepted');
+    assert.equal(await c.count(), 3, 'own origin (www or not, any port) and no Origin at all are accepted');
   });
 
   it('behind a trusted proxy that rewrites Host, X-Forwarded-Host names the site', async () => {
     const proxied = { Origin: 'https://siroya.com', Host: '127.0.0.1:5173', 'X-Forwarded-Host': 'siroya.com', 'X-Forwarded-For': '203.0.113.9' };
     const off = await start({ perIp: 100 });
     await beacon(off.port, proxied);
-    assert.equal(off.count(), 0, 'X-Forwarded-Host is not trusted without TRUST_PROXY');
+    assert.equal(await off.count(), 0, 'X-Forwarded-Host is not trusted without TRUST_PROXY');
     const on = await start({ env: { TRUST_PROXY: true }, perIp: 100 });
     await beacon(on.port, proxied);
     await beacon(on.port, { ...proxied, Referer: 'https://siroya.com/' }, { t: 'page_view', sid: '0123456789abcdef', p: '/', ref: 'siroya.com' });
-    assert.equal(on.count(), 2);
-    assert.equal(on.db.stmt('SELECT source FROM events ORDER BY id DESC LIMIT 1').get().source, 'direct', 'own host via X-Forwarded-Host');
+    assert.equal(await on.count(), 2);
+    assert.equal((await on.db.stmt('SELECT source FROM events ORDER BY id DESC LIMIT 1').get()).source, 'direct', 'own host via X-Forwarded-Host');
   });
 
   it('answers junk with 204 once server.js honours beacon: true (413 stays)', async () => {
@@ -1481,7 +1629,7 @@ describe('api: beacon hardening', () => {
     }
     const big = await beacon(c.port, {}, JSON.stringify({ t: 'page_view', sid: '0123456789abcdef', p: 'x'.repeat(5000) }));
     assert.equal(big.status, 413);
-    assert.equal(c.count(), 0);
+    assert.equal(await c.count(), 0);
   });
 
   it('caches the report for a minute and starts a new one on a new day', async () => {
@@ -1492,50 +1640,60 @@ describe('api: beacon hardening', () => {
     assert.equal(b.data.generated_at, a.data.generated_at);
     assert.equal(b.data.today.page_views, a.data.today.page_views, 'served from the one-minute cache');
     const t = Date.parse(a.data.generated_at);
-    assert.notEqual(c.registered.report(7, t + 61 * 1000).generated_at, a.data.generated_at, 'recomputed after a minute');
-    assert.equal(c.registered.report(7, t + 61 * 1000).today.page_views, a.data.today.page_views + 1);
+    assert.notEqual((await c.registered.report(7, t + 61 * 1000)).generated_at, a.data.generated_at, 'recomputed after a minute');
+    assert.equal((await c.registered.report(7, t + 61 * 1000)).today.page_views, a.data.today.page_views + 1);
+    const [x, y] = await Promise.all([c.registered.report(30, t + 62 * 1000), c.registered.report(30, t + 62 * 1000)]);
+    assert.equal(x, y, 'concurrent requests share one computation');
   });
 
-  it('removes the Google key from the database files on disconnect (plain key, WAL)', () => {
+  it('removes the Google key from the database files on disconnect (plain key, WAL)', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'siroya-traffic-'));
     const file = path.join(dir, 'wipe.db');
     const fragment = KEYS.privateKey.split('\n')[7];
+    let db = null;
+    let registered = null;
     try {
-      const db = quietly(() => { const d = openDb(file); d.migrate(); return d; });
-      const registered = registerTraffic(new Router(), { db, env: {}, purge: false });
-      registered.google.save({ service_account_json: JSON.stringify(serviceAccount()), gsc_site: 'sc-domain:siroya.com' });
-      for (let i = 0; i < 5; i++) db.setSetting('google', { ...db.getSetting('google'), last_sync: new Date(BASE + i).toISOString() });
+      db = await quietly(async () => { const d = openDb(file); await d.migrate(); return d; });
+      registered = registerTraffic(new Router(), { db, env: {}, purge: false });
+      await registered.init();
+      await registered.google.save({ service_account_json: JSON.stringify(serviceAccount()), gsc_site: 'sc-domain:siroya.com' });
+      for (let i = 0; i < 5; i++) await db.setSetting('google', { ...(await db.getSetting('google')), last_sync: new Date(BASE + i).toISOString() });
       const onDisk = () => ['', '-wal'].some(ext => fs.existsSync(file + ext) && fs.readFileSync(file + ext).includes(fragment));
       assert.equal(onDisk(), true, 'positive control: a plain key is on disk while connected');
-      registered.google.disconnect();
+      await registered.google.disconnect();
       assert.equal(onDisk(), false, 'no copy left in the database file or the WAL');
-      registered.stop();
-      db.close();
+      await registered.stop();
+      await db.close();
       assert.equal(onDisk(), false);
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      if (registered) await registered.stop();
+      if (db) await db.close();
+      await removeDir(dir);
     }
   });
 
-  it('with SESSION_SECRET the key is only ever written encrypted', () => {
+  it('with SESSION_SECRET the key is only ever written encrypted', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'siroya-traffic-'));
     const file = path.join(dir, 'enc.db');
     const fragment = KEYS.privateKey.split('\n')[7];
+    let db = null;
+    let registered = null;
     try {
-      const db = quietly(() => { const d = openDb(file); d.migrate(); return d; });
-      const registered = registerTraffic(new Router(), { db, env: { SESSION_SECRET: 'a'.repeat(64) }, purge: false });
-      const st = registered.google.save({ service_account_json: JSON.stringify(serviceAccount()), gsc_site: 'sc-domain:siroya.com' });
+      db = await quietly(async () => { const d = openDb(file); await d.migrate(); return d; });
+      registered = registerTraffic(new Router(), { db, env: { SESSION_SECRET: 'a'.repeat(64) }, purge: false });
+      await registered.init();
+      const st = await registered.google.save({ service_account_json: JSON.stringify(serviceAccount()), gsc_site: 'sc-domain:siroya.com' });
       assert.equal(st.connected, true);
-      const row = db.getSetting('google');
+      const row = await db.getSetting('google');
       assert.ok(!('private_key' in row));
       assert.match(row.private_key_enc, /^v1:/);
       for (const ext of ['', '-wal']) {
         if (fs.existsSync(file + ext)) assert.equal(fs.readFileSync(file + ext).includes(fragment), false, ext || 'db');
       }
-      registered.stop();
-      db.close();
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      if (registered) await registered.stop();
+      if (db) await db.close();
+      await removeDir(dir);
     }
   });
 });
@@ -1560,7 +1718,7 @@ describe('google: key at rest, wipe and date windows', () => {
   it('stores the private key encrypted when a secret is set, and still signs with it', async () => {
     const st = memorySettings();
     const client = G.createGoogleClient({ ...st, secret: SECRET, now: () => BASE });
-    client.save({ service_account_json: JSON.stringify(serviceAccount()), gsc_site: 'sc-domain:siroya.com' });
+    await client.save({ service_account_json: JSON.stringify(serviceAccount()), gsc_site: 'sc-domain:siroya.com' });
     const raw = st.map.get('google');
     assert.ok(!raw.includes('PRIVATE KEY') && !raw.includes(KEY_FRAGMENT));
     assert.ok(!('private_key' in JSON.parse(raw)));
@@ -1571,53 +1729,73 @@ describe('google: key at rest, wipe and date windows', () => {
     assert.equal(JSON.parse(st.map.get('google')).private_key_enc, enc, 'no new ciphertext on every sync');
 
     const restarted = G.createGoogleClient({ ...st, secret: SECRET, now: () => BASE + 7 * 3600 * 1000 });
-    assert.equal(restarted.status().connected, true);
+    assert.equal((await restarted.status()).connected, true);
     assert.equal((await restarted.searchReport(28)).cached, false);
 
     const otherSecret = G.createGoogleClient({ ...st, secret: crypto.randomBytes(32).toString('hex'), now: () => BASE });
-    const s2 = otherSecret.status();
+    const s2 = await otherSecret.status();
     assert.equal(s2.connected, false);
     assert.match(s2.last_error, /could not be read on this server/);
     await assert.rejects(otherSecret.searchReport(7), err => err.status === 409 && err.data.code === 'not_connected');
-    otherSecret.save({ ga4_property: '123456' });
+    await otherSecret.save({ ga4_property: '123456' });
     assert.ok(JSON.parse(st.map.get('google')).private_key_enc, 'an unreadable key is kept until it is replaced or removed');
   });
 
-  it('encrypts a key saved before the secret was set, and wipes after', () => {
+  it('encrypts a key saved before the secret was set, and wipes after', async () => {
     const st = memorySettings();
-    G.createGoogleClient({ ...st, now: () => BASE }).save({ service_account_json: JSON.stringify(serviceAccount()) });
+    await G.createGoogleClient({ ...st, now: () => BASE }).save({ service_account_json: JSON.stringify(serviceAccount()) });
     assert.ok(st.map.get('google').includes('PRIVATE KEY'), 'no secret: stored as is');
     let wiped = 0;
     const client = G.createGoogleClient({ ...st, secret: SECRET, wipe: () => { wiped++; }, now: () => BASE });
+    assert.ok(client.ready instanceof Promise);
+    await client.ready;
     assert.ok(!st.map.get('google').includes('PRIVATE KEY'));
     assert.equal(wiped, 1);
-    assert.equal(client.status().connected, true);
+    assert.equal((await client.status()).connected, true);
+    // async settings (as openDb() has) and an async wipe work the same way
+    const later = memorySettings();
+    await G.createGoogleClient({ ...later, now: () => BASE }).save({ service_account_json: JSON.stringify(serviceAccount()) });
+    let wipedAsync = 0;
+    const asyncClient = G.createGoogleClient({
+      getSetting: async (k, f) => later.getSetting(k, f),
+      setSetting: async (k, v) => later.setSetting(k, v),
+      secret: SECRET,
+      wipe: async () => { await new Promise(resolve => setTimeout(resolve, 5)); wipedAsync++; },
+      now: () => BASE,
+    });
+    await asyncClient.ready;
+    assert.ok(!later.map.get('google').includes('PRIVATE KEY'));
+    assert.equal(wipedAsync, 1);
+    assert.equal((await asyncClient.status()).connected, true);
+    // ready never rejects, even when the settings cannot be read
+    const broken = G.createGoogleClient({ getSetting: async () => { throw new Error('no table'); }, setSetting: async () => {}, secret: SECRET });
+    await broken.ready;
   });
 
-  it('calls wipe when a key is replaced or removed, not for property changes', () => {
+  it('calls wipe when a key is replaced or removed, not for property changes', async () => {
     const st = memorySettings();
     let wiped = 0;
     const client = G.createGoogleClient({ ...st, wipe: () => { wiped++; }, now: () => BASE });
-    client.save({ service_account_json: JSON.stringify(serviceAccount()) });
+    await client.save({ service_account_json: JSON.stringify(serviceAccount()) });
     assert.equal(wiped, 0, 'first key: nothing old to scrub');
-    client.save({ gsc_site: 'sc-domain:siroya.com', ga4_property: '123456' });
+    await client.save({ gsc_site: 'sc-domain:siroya.com', ga4_property: '123456' });
     assert.equal(wiped, 0);
-    client.save({ service_account_json: JSON.stringify(serviceAccount()) });
+    await client.save({ service_account_json: JSON.stringify(serviceAccount()) });
     assert.equal(wiped, 0, 'the same key again is not a change');
-    client.save({ service_account_json: JSON.stringify(serviceAccount(OTHER_KEYS.privateKey)) });
+    await client.save({ service_account_json: JSON.stringify(serviceAccount(OTHER_KEYS.privateKey)) });
     assert.equal(wiped, 1);
-    client.disconnect();
+    await client.disconnect();
     assert.equal(wiped, 2);
     const thrower = G.createGoogleClient({ ...memorySettings(), wipe: () => { throw new Error('disk'); } });
-    thrower.save({ service_account_json: JSON.stringify(serviceAccount()) });
-    assert.equal(thrower.disconnect().connected, false, 'a failing wipe never blocks a disconnect');
+    await thrower.save({ service_account_json: JSON.stringify(serviceAccount()) });
+    assert.equal((await thrower.disconnect()).connected, false, 'a failing wipe never blocks a disconnect');
   });
 
   it('treats a cached report for an older date window as expired', async () => {
     const st = memorySettings();
     let clock = Date.parse('2026-10-01T19:00:00Z'); // 23:00 in Dubai
     const client = G.createGoogleClient({ ...st, now: () => clock });
-    client.save({ service_account_json: JSON.stringify(serviceAccount()), gsc_site: 'sc-domain:siroya.com' });
+    await client.save({ service_account_json: JSON.stringify(serviceAccount()), gsc_site: 'sc-domain:siroya.com' });
     const before = await client.searchReport(7);
     assert.equal(before.to, '2026-09-30');
     clock += 90 * 60 * 1000; // 00:30 in Dubai, the next day

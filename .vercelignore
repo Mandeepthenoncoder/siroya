@@ -1,0 +1,15 @@
+# Never upload local data, secrets or dev-only material with `vercel deploy`
+server/data
+site/uploads
+docs/
+server/test/
+.env
+*.env
+server/.env
+vercel-import.env
+old web assets/
+generated/
+review/
+*.pdf
+.claude/
+node_modules/

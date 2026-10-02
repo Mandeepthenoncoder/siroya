@@ -44,7 +44,10 @@ const NOT_FOUND_HTML = Buffer.from(`<!doctype html><html lang="en"><head><meta c
 
 function createStatic(siteDir) {
   // Native realpath matches fsp.realpath below (true casing on Windows).
-  const root = fs.realpathSync.native(siteDir);
+  // On Vercel the site folder may be missing from the function bundle (the CDN
+  // serves it); static requests never reach the function there.
+  let root;
+  try { root = fs.realpathSync.native(siteDir); } catch { root = path.resolve(siteDir); }
   const gzCache = new Map();
   let gzBytes = 0;
 

@@ -40,19 +40,28 @@ function quietly(fn) {
   try { return fn(); } finally { console.log = log; console.warn = warn; }
 }
 
+async function quietlyAsync(fn) {
+  const log = console.log;
+  const warn = console.warn;
+  console.log = () => {};
+  console.warn = () => {};
+  try { return await fn(); } finally { console.log = log; console.warn = warn; }
+}
+
+/* A private temporary SQLite file (openDb(':memory:')), removed on close(). */
 function freshDb() {
-  return quietly(() => {
+  return quietlyAsync(async () => {
     const db = openDb(':memory:');
-    db.migrate();
+    await db.migrate();
     return db;
   });
 }
 
-function seedCollections(db) {
+async function seedCollections(db) {
   const ins = db.stmt('INSERT INTO collections (slug, name, kind, short, hero, cover, active, sort) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
-  ins.run('sanskriti', 'Sanskriti', 'Temple Jewellery', 'Temple jewellery for weddings.', 'assets/img/collections/sanskriti-hero.jpg', 'assets/img/collections/sanskriti-cover.jpg', 1, 0);
-  ins.run('rangmahal', 'Rangmahal', 'Precious Stone Jewellery', 'Rubies, emeralds and sapphires.', 'assets/img/collections/rangmahal-hero.jpg', 'assets/img/collections/rangmahal-cover.jpg', 1, 1);
-  ins.run('hidden', 'Hidden', '', '', '', '', 0, 2);
+  await ins.run('sanskriti', 'Sanskriti', 'Temple Jewellery', 'Temple jewellery for weddings.', 'assets/img/collections/sanskriti-hero.jpg', 'assets/img/collections/sanskriti-cover.jpg', 1, 0);
+  await ins.run('rangmahal', 'Rangmahal', 'Precious Stone Jewellery', 'Rubies, emeralds and sapphires.', 'assets/img/collections/rangmahal-hero.jpg', 'assets/img/collections/rangmahal-cover.jpg', 1, 1);
+  await ins.run('hidden', 'Hidden', '', '', '', '', 0, 2);
 }
 
 function tempSite() {
@@ -362,6 +371,33 @@ describe('homepage: validate media paths', () => {
     assert.throws(() => H.validate(c), isBad(/Featured image/));
   });
 
+  it('accepts uploads on the media storage domain (R2_PUBLIC_URL) and nothing else on https', () => {
+    const saved = process.env.R2_PUBLIC_URL;
+    process.env.R2_PUBLIC_URL = 'https://media.example.com/';
+    try {
+      const url = 'https://media.example.com/uploads/2026/10/abcdef0123456789.jpg';
+      assert.equal(H.validate(withImage(url)).hero.slides[0].image, url);
+      const v = base();
+      v.hero.mode = 'video';
+      v.hero.video.src = 'https://media.example.com/uploads/2026/10/abcdef0123456789.mp4';
+      v.hero.video.poster = url;
+      assert.equal(H.validate(v).hero.video.src, v.hero.video.src);
+      for (const no of [
+        'https://cdn.example.com/uploads/2026/10/a.jpg',
+        'https://media.example.com/assets/img/a.jpg',
+        'https://media.example.com/uploads/../x.jpg',
+        'https://media.example.com/uploads/2026/10/a.jpg?x=1',
+        'https://media.example.com.evil.com/uploads/a.jpg',
+        'https://media.example.com/uploads/.hidden/a.jpg',
+        'https://media.example.com/uploads/2026/10/a.mp4',
+      ]) {
+        assert.throws(() => H.validate(withImage(no)), isBad(/Slide 1 desktop image/), no);
+      }
+    } finally {
+      if (saved === undefined) delete process.env.R2_PUBLIC_URL; else process.env.R2_PUBLIC_URL = saved;
+    }
+  });
+
   it('video paths must be uploads/ or assets/ and end .mp4 or .webm', () => {
     for (const ok of ['uploads/2026/10/aaaaaaaaaaaaaaaa.mp4', 'uploads/2026/10/aaaaaaaaaaaaaaaa.webm', 'assets/video/hero.MP4', '/uploads/2026/10/x.mp4']) {
       const h = base();
@@ -575,36 +611,36 @@ describe('homepage: seed defaults and storage', () => {
     assert.equal(H.defaults().hero.slides[0].headline, 'Jewellery that feels like home');
   });
 
-  it('seeds once when the key is missing and never overwrites', () => {
-    const db = freshDb();
-    assert.equal(db.getSetting(H.KEY, null), null);
-    assert.equal(H.seedHomepage(db), true);
-    assert.deepEqual(db.getSetting(H.KEY, null), H.defaults());
+  it('seeds once when the key is missing and never overwrites', async () => {
+    const db = await freshDb();
+    assert.equal(await db.getSetting(H.KEY, null), null);
+    assert.equal(await H.seedHomepage(db), true);
+    assert.deepEqual(await db.getSetting(H.KEY, null), H.defaults());
     const custom = H.validate(base());
-    H.saveHomepage(db, custom);
-    assert.equal(H.seedHomepage(db), false);
-    assert.deepEqual(H.getHomepage(db), custom);
-    db.close();
+    await H.saveHomepage(db, custom);
+    assert.equal(await H.seedHomepage(db), false);
+    assert.deepEqual(await H.getHomepage(db), custom);
+    await db.close();
   });
 
-  it('getHomepage writes the seed on first read and survives a corrupt value', () => {
-    const db = freshDb();
-    assert.deepEqual(H.getHomepage(db), H.defaults());
-    assert.deepEqual(db.getSetting(H.KEY, null), H.defaults());
-    db.setSetting(H.KEY, { hero: { mode: 'video', slides: [] } });
-    assert.deepEqual(quietly(() => H.getHomepage(db)), H.defaults());
-    db.close();
+  it('getHomepage writes the seed on first read and survives a corrupt value', async () => {
+    const db = await freshDb();
+    assert.deepEqual(await H.getHomepage(db), H.defaults());
+    assert.deepEqual(await db.getSetting(H.KEY, null), H.defaults());
+    await db.setSetting(H.KEY, { hero: { mode: 'video', slides: [] } });
+    assert.deepEqual(await quietlyAsync(() => H.getHomepage(db)), H.defaults());
+    await db.close();
   });
 });
 
 describe('homepage: resolveFeatured', () => {
   let db;
-  before(() => { db = freshDb(); seedCollections(db); });
+  before(async () => { db = await freshDb(); await seedCollections(db); });
   after(() => db.close());
 
-  it('resolves the chosen active collection', () => {
+  it('resolves the chosen active collection', async () => {
     const home = H.defaults();
-    const out = H.resolveFeatured(db, home);
+    const out = await H.resolveFeatured(db, home);
     assert.deepEqual(out.featured.resolved, {
       slug: 'sanskriti', name: 'Sanskriti', kind: 'Temple Jewellery', short: 'Temple jewellery for weddings.',
       hero: 'assets/img/collections/sanskriti-hero.jpg', cover: 'assets/img/collections/sanskriti-cover.jpg',
@@ -615,12 +651,12 @@ describe('homepage: resolveFeatured', () => {
     assert.deepEqual(out.hero, home.hero);
   });
 
-  it('falls back to the first active collection and blanks overrides for a hidden or missing one', () => {
+  it('falls back to the first active collection and blanks overrides for a hidden or missing one', async () => {
     for (const slug of ['hidden', 'does-not-exist']) {
       const home = H.defaults();
       home.featured.collection = slug;
       home.featured.image = 'uploads/2026/10/x.jpg';
-      const out = H.resolveFeatured(db, home);
+      const out = await H.resolveFeatured(db, home);
       assert.equal(out.featured.resolved.slug, 'sanskriti');
       assert.equal(out.featured.resolved.fallback, true);
       assert.equal(out.featured.collection, slug);
@@ -628,16 +664,16 @@ describe('homepage: resolveFeatured', () => {
     }
   });
 
-  it('is null when no collection is active', () => {
-    const empty = freshDb();
-    assert.equal(H.resolveFeatured(empty, H.defaults()).featured.resolved, null);
-    empty.close();
+  it('is null when no collection is active', async () => {
+    const empty = await freshDb();
+    assert.equal((await H.resolveFeatured(empty, H.defaults())).featured.resolved, null);
+    await empty.close();
   });
 
-  it('assertFeaturedCollection refuses unknown and hidden collections', () => {
-    assert.doesNotThrow(() => H.assertFeaturedCollection(db, 'rangmahal'));
-    assert.throws(() => H.assertFeaturedCollection(db, 'nope'), isBad(/Unknown collection "nope"/));
-    assert.throws(() => H.assertFeaturedCollection(db, 'hidden'), isBad(/hidden on the site/));
+  it('assertFeaturedCollection refuses unknown and hidden collections', async () => {
+    await assert.doesNotReject(() => H.assertFeaturedCollection(db, 'rangmahal'));
+    await assert.rejects(() => H.assertFeaturedCollection(db, 'nope'), isBad(/Unknown collection "nope"/));
+    await assert.rejects(() => H.assertFeaturedCollection(db, 'hidden'), isBad(/hidden on the site/));
   });
 });
 
@@ -657,30 +693,30 @@ describe('homepage API over HTTP', () => {
   const SMALL_LIMIT = 1024 * 1024;
 
   before(async () => {
-    db = freshDb();
-    seedCollections(db);
+    db = await freshDb();
+    await seedCollections(db);
     siteDir = tempSite();
     videoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'siroya-video-'));
     videos = makeVideos(videoDir);
     auth = createAuth(TEST_ENV);
     cookie = auth.issueCookie({ socket: {}, headers: {} }).split(';')[0];
     const router = new Router();
-    registerHomepage(router, { db, siteDir, maxVideoBytes: SMALL_LIMIT });
+    await registerHomepage(router, { db, siteDir, maxVideoBytes: SMALL_LIMIT }).init();
     server = http.createServer(testApp(router, { auth, siteDir }));
     port = await listenInRange(server);
   });
 
   after(async () => {
     await closeServer(server);
-    db.close();
+    await db.close();
     fs.rmSync(siteDir, { recursive: true, force: true });
     fs.rmSync(videoDir, { recursive: true, force: true });
   });
 
   const authed = (extra = {}) => ({ Cookie: cookie, ...extra });
 
-  it('seeds on registration and serves the public object with featured resolved', async () => {
-    assert.deepEqual(db.getSetting(H.KEY, null), H.defaults());
+  it('seeds on start-up (init) and serves the public object with featured resolved', async () => {
+    assert.deepEqual(await db.getSetting(H.KEY, null), H.defaults());
     const r = await request(port, 'GET', '/api/homepage');
     assert.equal(r.status, 200);
     assert.equal(r.headers['cache-control'], 'no-store');
@@ -724,7 +760,7 @@ describe('homepage API over HTTP', () => {
     assert.equal(r.data.hero.interval, 12);
     assert.equal(r.data.hero.slides[0].headline, 'Festive gold');
     assert.equal(r.data.unknown, undefined);
-    assert.deepEqual(db.getSetting(H.KEY, null), r.data);
+    assert.deepEqual(await db.getSetting(H.KEY, null), r.data);
     const pub = await request(port, 'GET', '/api/homepage');
     assert.equal(pub.data.hero.slides.length, 2);
     assert.equal(pub.data.featured.resolved.slug, 'rangmahal');
@@ -732,7 +768,7 @@ describe('homepage API over HTTP', () => {
   });
 
   it('PUT keeps the saved featured block when only hero is sent', async () => {
-    const before = db.getSetting(H.KEY, null);
+    const before = await db.getSetting(H.KEY, null);
     const hero = { ...before.hero, align: 'center' };
     const r = await request(port, 'PUT', '/api/admin/homepage', { body: { hero }, headers: authed({ 'Content-Type': 'application/json' }) });
     assert.equal(r.status, 200, r.text);
@@ -741,7 +777,7 @@ describe('homepage API over HTTP', () => {
   });
 
   it('PUT errors are 400 with a clear message and nothing is saved', async () => {
-    const saved = db.getSetting(H.KEY, null);
+    const saved = await db.getSetting(H.KEY, null);
     const cases = [
       [(h => { h.hero.slides[0].cta_link = 'javascript:alert(1)'; return h; })(base()), /Slide 1 button 1 link must be a page on this site/],
       [(h => { h.hero.slides = []; return h; })(base()), /Add at least one slide/],
@@ -755,7 +791,7 @@ describe('homepage API over HTTP', () => {
       assert.match(r.data.error, re);
       assert.doesNotMatch(r.data.error, /[\u2013\u2014]/);
     }
-    assert.deepEqual(db.getSetting(H.KEY, null), saved);
+    assert.deepEqual(await db.getSetting(H.KEY, null), saved);
     const wrongType = await request(port, 'PUT', '/api/admin/homepage', { body: 'hero=1', headers: authed({ 'Content-Type': 'application/x-www-form-urlencoded' }) });
     assert.equal(wrongType.status, 415);
     const notJson = await request(port, 'PUT', '/api/admin/homepage', { body: '{', headers: authed({ 'Content-Type': 'application/json' }) });
@@ -952,20 +988,20 @@ describe('video upload: rate limit and default size cap', () => {
   let videoDir;
 
   before(async () => {
-    db = freshDb();
+    db = await freshDb();
     siteDir = tempSite();
     videoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'siroya-video-'));
     videos = makeVideos(videoDir);
     auth = createAuth(TEST_ENV);
     const router = new Router();
-    registerHomepage(router, { db, siteDir, videoLimiter: createLimiter({ limit: 2, windowMs: 60 * 60 * 1000 }) });
+    await registerHomepage(router, { db, siteDir, videoLimiter: createLimiter({ limit: 2, windowMs: 60 * 60 * 1000 }) }).init();
     server = http.createServer(testApp(router, { auth, siteDir }));
     port = await listenInRange(server);
   });
 
   after(async () => {
     await closeServer(server);
-    db.close();
+    await db.close();
     fs.rmSync(siteDir, { recursive: true, force: true });
     fs.rmSync(videoDir, { recursive: true, force: true });
   });
@@ -1159,11 +1195,11 @@ describe('video upload: stalled clients', () => {
   });
 
   it('closes a stalled HTTP upload socket and removes the temp file', async () => {
-    const db = freshDb();
+    const db = await freshDb();
     const auth = createAuth(TEST_ENV);
     const cookie = auth.issueCookie({ socket: {}, headers: {} }).split(';')[0];
     const router = new Router();
-    registerHomepage(router, { db, siteDir, uploadIdleMs: 300 });
+    await registerHomepage(router, { db, siteDir, uploadIdleMs: 300 }).init();
     const server = http.createServer(testApp(router, { auth, siteDir }));
     const errors = console.error;
     console.error = () => {};
@@ -1191,7 +1227,7 @@ describe('video upload: stalled clients', () => {
     } finally {
       console.error = errors;
       await closeServer(server);
-      db.close();
+      await db.close();
     }
   });
 });
@@ -1206,12 +1242,12 @@ describe('server.js integration', () => {
 
   it('upload, homepage API and ranges work through createApp', { skip: integrated ? false : 'server.js does not register registerHomepage with the raw option yet' }, async () => {
     const { createApp } = require('../server');
-    const db = freshDb();
-    seedCollections(db);
+    const db = await freshDb();
+    await seedCollections(db);
     const siteDir = tempSite();
     const videoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'siroya-video-'));
     const videos = makeVideos(videoDir);
-    const server = http.createServer(createApp({ env: TEST_ENV, db, siteDir }));
+    const server = http.createServer(createApp({ env: TEST_ENV, db, siteDir, timers: false, seed: false }));
     const log = console.log;
     console.log = () => {};
     try {
@@ -1234,7 +1270,7 @@ describe('server.js integration', () => {
     } finally {
       console.log = log;
       await closeServer(server);
-      db.close();
+      await db.close();
       fs.rmSync(siteDir, { recursive: true, force: true });
       fs.rmSync(videoDir, { recursive: true, force: true });
     }

@@ -8,6 +8,7 @@ const V = require('../validate');
 const { now } = require('../db');
 const { toCsv } = require('../csv');
 const { saveUpload } = require('../uploads');
+const { presignUpload } = require('../storage');
 const { siteObject } = require('./public');
 
 const UPLOAD_LIMIT = 12 * 1024 * 1024;
@@ -128,52 +129,52 @@ function pickFields(fields, input) {
   return out;
 }
 
-function registerAdmin(router, { db, auth, env, loginLimiter, siteDir }) {
+function registerAdmin(router, { db, auth, env, loginLimiter, siteDir, storage }) {
   const { stmt, tx } = db;
 
   /* ---------- helpers ---------- */
 
-  function slugTaken(table, column, value, selfId) {
-    return !!stmt(`SELECT id FROM ${table} WHERE ${column} = ? AND id != ?`).get(value, selfId || 0);
+  async function slugTaken(table, column, value, selfId) {
+    return !!(await stmt(`SELECT id FROM ${table} WHERE ${column} = ? AND id != ?`).get(value, selfId || 0));
   }
 
   /* Explicit slug: validated, 409 on clash. Blank: generated from the name
      and made unique with a numeric suffix. */
-  function resolveSlug(table, column, provided, name, selfId, label) {
+  async function resolveSlug(table, column, provided, name, selfId, label) {
     const given = V.slug(provided, label);
     if (given) {
-      if (slugTaken(table, column, given, selfId)) throw new HttpError(409, `${label} "${given}" is already in use`);
+      if (await slugTaken(table, column, given, selfId)) throw new HttpError(409, `${label} "${given}" is already in use`);
       return given;
     }
     const base = V.slugify(name) || `${table.replace(/s$/, '')}-${crypto.randomBytes(3).toString('hex')}`;
     let candidate = base;
-    for (let i = 2; slugTaken(table, column, candidate, selfId); i++) {
+    for (let i = 2; await slugTaken(table, column, candidate, selfId); i++) {
       const suffix = `-${i}`;
       candidate = `${base.slice(0, 80 - suffix.length).replace(/-+$/, '')}${suffix}`;
     }
     return candidate;
   }
 
-  function nextSort(table) {
-    const row = stmt(`SELECT MAX(sort) AS m FROM ${table}`).get();
+  async function nextSort(table) {
+    const row = await stmt(`SELECT MAX(sort) AS m FROM ${table}`).get();
     return row && row.m !== null ? Math.min(SORT_MAX, Number(row.m) + 1) : 0;
   }
 
-  function insertRow(table, values) {
+  async function insertRow(table, values) {
     const cols = Object.keys(values);
     const sql = `INSERT INTO ${table} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`;
-    return Number(stmt(sql).run(...cols.map(c => values[c])).lastInsertRowid);
+    return Number((await stmt(sql).run(...cols.map(c => values[c]))).lastInsertRowid);
   }
 
-  function updateRow(table, id, values) {
+  async function updateRow(table, id, values) {
     const cols = Object.keys(values);
     if (!cols.length) return;
-    stmt(`UPDATE ${table} SET ${cols.map(c => `${c} = ?`).join(', ')} WHERE id = ?`).run(...cols.map(c => values[c]), id);
+    await stmt(`UPDATE ${table} SET ${cols.map(c => `${c} = ?`).join(', ')} WHERE id = ?`).run(...cols.map(c => values[c]), id);
   }
 
-  function productCounts(column) {
+  async function productCounts(column) {
     const map = new Map();
-    for (const r of stmt(`SELECT ${column} AS slug, COUNT(*) AS n FROM products GROUP BY ${column}`).all()) map.set(r.slug, r.n);
+    for (const r of await stmt(`SELECT ${column} AS slug, COUNT(*) AS n FROM products GROUP BY ${column}`).all()) map.set(r.slug, r.n);
     return map;
   }
 
@@ -200,20 +201,24 @@ function registerAdmin(router, { db, auth, env, loginLimiter, siteDir }) {
 
   /* ---------- dashboard ---------- */
 
-  router.get('/api/admin/stats', () => {
+  router.get('/api/admin/stats', async () => {
     const products = { active: 0, draft: 0, archived: 0 };
-    for (const r of stmt('SELECT status, COUNT(*) AS n FROM products GROUP BY status').all()) {
+    const since = new Date(Date.now() - 7 * 864e5).toISOString();
+    const [statusRows, categories, collections, leadsTotal, leads7] = await Promise.all([
+      stmt('SELECT status, COUNT(*) AS n FROM products GROUP BY status').all(),
+      stmt('SELECT COUNT(*) AS n FROM categories').get(),
+      stmt('SELECT COUNT(*) AS n FROM collections').get(),
+      stmt('SELECT COUNT(*) AS n FROM leads').get(),
+      stmt('SELECT COUNT(*) AS n FROM leads WHERE created_at >= ?').get(since),
+    ]);
+    for (const r of statusRows) {
       if (r.status in products) products[r.status] = r.n;
     }
-    const since = new Date(Date.now() - 7 * 864e5).toISOString();
     return {
       products,
-      categories: stmt('SELECT COUNT(*) AS n FROM categories').get().n,
-      collections: stmt('SELECT COUNT(*) AS n FROM collections').get().n,
-      leads: {
-        total: stmt('SELECT COUNT(*) AS n FROM leads').get().n,
-        last7: stmt('SELECT COUNT(*) AS n FROM leads WHERE created_at >= ?').get(since).n,
-      },
+      categories: categories.n,
+      collections: collections.n,
+      leads: { total: leadsTotal.n, last7: leads7.n },
     };
   }, { auth: true });
 
@@ -223,77 +228,78 @@ function registerAdmin(router, { db, auth, env, loginLimiter, siteDir }) {
     const base = `/api/admin/${name}`;
     const { table, label } = def;
 
-    const withCount = (row, counts) => {
+    const withCount = async (row, counts) => {
       const item = def.out(row);
-      if (def.ref) item.product_count = counts ? counts.get(row.slug) || 0 : stmt(`SELECT COUNT(*) AS n FROM products WHERE ${def.ref} = ?`).get(row.slug).n;
+      if (def.ref) item.product_count = counts ? counts.get(row.slug) || 0 : (await stmt(`SELECT COUNT(*) AS n FROM products WHERE ${def.ref} = ?`).get(row.slug)).n;
       return item;
     };
-    const listAll = () => {
-      const counts = def.ref ? productCounts(def.ref) : null;
-      return stmt(`SELECT * FROM ${table} ORDER BY sort, id`).all().map(r => withCount(r, counts));
+    const listAll = async () => {
+      const [counts, rows] = await Promise.all([
+        def.ref ? productCounts(def.ref) : null,
+        stmt(`SELECT * FROM ${table} ORDER BY sort, id`).all(),
+      ]);
+      return Promise.all(rows.map(r => withCount(r, counts)));
     };
-    const getRow = id => {
-      const row = stmt(`SELECT * FROM ${table} WHERE id = ?`).get(id);
+    const getRow = async id => {
+      const row = await stmt(`SELECT * FROM ${table} WHERE id = ?`).get(id);
       if (!row) throw new HttpError(404, `${label} not found`);
       return row;
     };
 
-    router.get(base, () => ({ items: listAll() }), { auth: true });
+    router.get(base, async () => ({ items: await listAll() }), { auth: true });
 
-    router.get(`${base}/:id`, ({ params }) => withCount(getRow(params.id)), { auth: true });
+    router.get(`${base}/:id`, async ({ params }) => withCount(await getRow(params.id)), { auth: true });
 
-    router.post(base, ({ req, res, body }) => {
-      const item = tx(() => {
-        const values = pickFields(def.fields, body);
-        if (!values.name) throw new HttpError(400, `${label} name is required`);
+    router.post(base, async ({ req, res, body }) => {
+      const values = pickFields(def.fields, body);
+      if (!values.name) throw new HttpError(400, `${label} name is required`);
+      const item = await tx(async () => {
         const record = { ...def.defaults, ...values };
-        record.slug = resolveSlug(table, 'slug', body.slug, values.name, 0, `${label} slug`);
-        if (record.sort === undefined) record.sort = nextSort(table);
+        record.slug = await resolveSlug(table, 'slug', body.slug, values.name, 0, `${label} slug`);
+        if (record.sort === undefined) record.sort = await nextSort(table);
         if (def.timestamps) record.created_at = record.updated_at = now();
-        const id = insertRow(table, record);
-        return withCount(getRow(id));
+        const id = await insertRow(table, record);
+        return withCount(await getRow(id));
       });
       json(req, res, 201, item);
     }, { auth: true });
 
-    router.put(`${base}/order`, ({ body }) => {
+    router.put(`${base}/order`, async ({ body }) => {
       const ids = V.idList(body.ids);
-      tx(() => {
-        const ts = now();
-        const sql = def.timestamps ? `UPDATE ${table} SET sort = ?, updated_at = ? WHERE id = ?` : `UPDATE ${table} SET sort = ? WHERE id = ?`;
-        ids.forEach((id, i) => (def.timestamps ? stmt(sql).run(i, ts, id) : stmt(sql).run(i, id)));
-      });
-      return { ok: true, items: listAll() };
+      const ts = now();
+      const sql = def.timestamps ? `UPDATE ${table} SET sort = ?, updated_at = ? WHERE id = ?` : `UPDATE ${table} SET sort = ? WHERE id = ?`;
+      if (ids.length) await db.batch(ids.map((id, i) => ({ sql, args: def.timestamps ? [i, ts, id] : [i, id] })));
+      return { ok: true, items: await listAll() };
     }, { auth: true });
 
-    router.put(`${base}/:id`, ({ params, body }) => tx(() => {
-      const row = getRow(params.id);
+    router.put(`${base}/:id`, ({ params, body }) => tx(async () => {
+      const row = await getRow(params.id);
       const values = pickFields(def.fields, body);
       if (V.hasOwn(values, 'name') && !values.name) throw new HttpError(400, `${label} name is required`);
       if (V.hasOwn(body, 'slug')) {
-        const slug = resolveSlug(table, 'slug', body.slug, values.name || row.name, row.id, `${label} slug`);
+        const slug = await resolveSlug(table, 'slug', body.slug, values.name || row.name, row.id, `${label} slug`);
         if (slug !== row.slug) values.slug = slug;
       }
       if (Object.keys(values).length && def.timestamps) values.updated_at = now();
-      updateRow(table, row.id, values);
+      await updateRow(table, row.id, values);
       // Keep products pointing at the renamed slug.
       if (values.slug && def.ref) {
-        stmt(`UPDATE products SET ${def.ref} = ?, updated_at = ? WHERE ${def.ref} = ?`).run(values.slug, now(), row.slug);
+        await stmt(`UPDATE products SET ${def.ref} = ?, updated_at = ? WHERE ${def.ref} = ?`).run(values.slug, now(), row.slug);
       }
-      return withCount(getRow(row.id));
+      return withCount(await getRow(row.id));
     }), { auth: true });
 
-    router.delete(`${base}/:id`, ({ params, query }) => tx(() => {
-      const row = getRow(params.id);
+    router.delete(`${base}/:id`, ({ params, query }) => tx(async () => {
+      const row = await getRow(params.id);
       let cleared = 0;
       if (def.ref) {
-        const used = stmt(`SELECT COUNT(*) AS n FROM products WHERE ${def.ref} = ?`).get(row.slug).n;
+        const used = (await stmt(`SELECT COUNT(*) AS n FROM products WHERE ${def.ref} = ?`).get(row.slug)).n;
         if (used && !isForce(query)) {
           throw new HttpError(409, `${used} ${used === 1 ? 'product uses' : 'products use'} this ${label.toLowerCase()}. Delete anyway and ${used === 1 ? 'it' : 'they'} will have no ${label.toLowerCase()}.`, null, { products: used });
         }
-        if (used) cleared = Number(stmt(`UPDATE products SET ${def.ref} = '', updated_at = ? WHERE ${def.ref} = ?`).run(now(), row.slug).changes);
+        if (used) cleared = Number((await stmt(`UPDATE products SET ${def.ref} = '', updated_at = ? WHERE ${def.ref} = ?`).run(now(), row.slug)).changes);
       }
-      stmt(`DELETE FROM ${table} WHERE id = ?`).run(row.id);
+      await stmt(`DELETE FROM ${table} WHERE id = ?`).run(row.id);
       return { ok: true, cleared };
     }), { auth: true });
   }
@@ -306,29 +312,29 @@ function registerAdmin(router, { db, auth, env, loginLimiter, siteDir }) {
     images: V.safeJson(r.images, []), featured: !!r.featured, status: r.status, sort: r.sort,
     created_at: r.created_at, updated_at: r.updated_at,
   });
-  const getProduct = id => {
-    const row = stmt('SELECT * FROM products WHERE id = ?').get(id);
+  const getProduct = async id => {
+    const row = await stmt('SELECT * FROM products WHERE id = ?').get(id);
     if (!row) throw new HttpError(404, 'Product not found');
     return row;
   };
 
   /* Collection / category slug that must exist (or be blank). An unchanged
      current value is accepted as is. */
-  function refSlug(table, value, label, current) {
+  async function refSlug(table, value, label, current) {
     const s = V.text(value, 80, label).toLowerCase();
     if (!s || s === current) return s;
-    if (!stmt(`SELECT 1 AS ok FROM ${table} WHERE slug = ?`).get(s)) throw new HttpError(400, `Unknown ${label.toLowerCase()} "${s}"`);
+    if (!await stmt(`SELECT 1 AS ok FROM ${table} WHERE slug = ?`).get(s)) throw new HttpError(400, `Unknown ${label.toLowerCase()} "${s}"`);
     return s;
   }
 
-  function productValues(body, row) {
+  async function productValues(body, row) {
     const values = pickFields(PRODUCT_FIELDS, body);
-    if (V.hasOwn(body, 'collection')) values.collection = refSlug('collections', body.collection, 'Collection', row && row.collection);
-    if (V.hasOwn(body, 'category')) values.category = refSlug('categories', body.category, 'Category', row && row.category);
+    if (V.hasOwn(body, 'collection')) values.collection = await refSlug('collections', body.collection, 'Collection', row && row.collection);
+    if (V.hasOwn(body, 'category')) values.category = await refSlug('categories', body.category, 'Category', row && row.category);
     return values;
   }
 
-  router.get('/api/admin/products', ({ query }) => {
+  router.get('/api/admin/products', async ({ query }) => {
     const where = [];
     const params = [];
     const q = V.text(query.get('q'), 200, 'Search');
@@ -351,28 +357,31 @@ function registerAdmin(router, { db, auth, env, loginLimiter, siteDir }) {
     const per = Math.min(200, Math.max(1, parseInt(query.get('per'), 10) || 50));
     const page = Math.max(1, parseInt(query.get('page'), 10) || 1);
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
-    const total = stmt(`SELECT COUNT(*) AS n FROM products ${whereSql}`).get(...params).n;
-    const items = stmt(`SELECT * FROM products ${whereSql} ORDER BY sort, id LIMIT ? OFFSET ?`)
-      .all(...params, per, (page - 1) * per).map(productOut);
+    const [totalRow, rows] = await Promise.all([
+      stmt(`SELECT COUNT(*) AS n FROM products ${whereSql}`).get(...params),
+      stmt(`SELECT * FROM products ${whereSql} ORDER BY sort, id LIMIT ? OFFSET ?`).all(...params, per, (page - 1) * per),
+    ]);
+    const total = totalRow.n;
+    const items = rows.map(productOut);
     return { items, total, page, per };
   }, { auth: true });
 
-  router.get('/api/admin/products/:id', ({ params }) => productOut(getProduct(params.id)), { auth: true });
+  router.get('/api/admin/products/:id', async ({ params }) => productOut(await getProduct(params.id)), { auth: true });
 
-  router.post('/api/admin/products', ({ req, res, body }) => {
-    const item = tx(() => {
-      const values = productValues(body, null);
+  router.post('/api/admin/products', async ({ req, res, body }) => {
+    const item = await tx(async () => {
+      const values = await productValues(body, null);
       if (!values.name) throw new HttpError(400, 'Product name is required');
       const record = { ...PRODUCT_DEFAULTS, ...values };
-      record.handle = resolveSlug('products', 'handle', body.handle, values.name, 0, 'Product handle');
-      if (record.sort === undefined) record.sort = nextSort('products');
+      record.handle = await resolveSlug('products', 'handle', body.handle, values.name, 0, 'Product handle');
+      if (record.sort === undefined) record.sort = await nextSort('products');
       record.created_at = record.updated_at = now();
-      return productOut(getProduct(insertRow('products', record)));
+      return productOut(await getProduct(await insertRow('products', record)));
     });
     json(req, res, 201, item);
   }, { auth: true });
 
-  router.post('/api/admin/products/bulk', ({ body }) => {
+  router.post('/api/admin/products/bulk', async ({ body }) => {
     const ids = V.idList(body.ids);
     if (!ids.length) throw new HttpError(400, 'Select at least one product');
     const action = V.text(body.action, 40, 'Action');
@@ -387,39 +396,37 @@ function registerAdmin(router, { db, auth, env, loginLimiter, siteDir }) {
       case 'unfeature': sql = 'UPDATE products SET featured = 0, updated_at = ? WHERE id = ?'; break;
       case 'delete': sql = 'DELETE FROM products WHERE id = ?'; break;
       case 'set_category':
-        extra = [refSlug('categories', body.value, 'Category', null)];
+        extra = [await refSlug('categories', body.value, 'Category', null)];
         sql = 'UPDATE products SET category = ?, updated_at = ? WHERE id = ?';
         break;
       case 'set_collection':
-        extra = [refSlug('collections', body.value, 'Collection', null)];
+        extra = [await refSlug('collections', body.value, 'Collection', null)];
         sql = 'UPDATE products SET collection = ?, updated_at = ? WHERE id = ?';
         break;
       default:
         throw new HttpError(400, 'Action must be one of: activate, draft, archive, delete, feature, unfeature, set_category, set_collection');
     }
-    const affected = tx(() => ids.reduce((n, id) => {
-      const args = action === 'delete' ? [id] : [...extra, ts, id];
-      return n + Number(stmt(sql).run(...args).changes);
-    }, 0));
+    const results = await db.batch(ids.map(id => ({ sql, args: action === 'delete' ? [id] : [...extra, ts, id] })));
+    const affected = results.reduce((n, rs) => n + Number(rs.rowsAffected || 0), 0);
     return { ok: true, affected };
   }, { auth: true });
 
-  router.put('/api/admin/products/:id', ({ params, body }) => tx(() => {
-    const row = getProduct(params.id);
-    const values = productValues(body, row);
+  router.put('/api/admin/products/:id', ({ params, body }) => tx(async () => {
+    const row = await getProduct(params.id);
+    const values = await productValues(body, row);
     if (V.hasOwn(values, 'name') && !values.name) throw new HttpError(400, 'Product name is required');
     if (V.hasOwn(body, 'handle')) {
-      const handle = resolveSlug('products', 'handle', body.handle, values.name || row.name, row.id, 'Product handle');
+      const handle = await resolveSlug('products', 'handle', body.handle, values.name || row.name, row.id, 'Product handle');
       if (handle !== row.handle) values.handle = handle;
     }
     if (Object.keys(values).length) values.updated_at = now();
-    updateRow('products', row.id, values);
-    return productOut(getProduct(row.id));
+    await updateRow('products', row.id, values);
+    return productOut(await getProduct(row.id));
   }), { auth: true });
 
-  router.delete('/api/admin/products/:id', ({ params }) => {
-    const row = getProduct(params.id);
-    stmt('DELETE FROM products WHERE id = ?').run(row.id);
+  router.delete('/api/admin/products/:id', async ({ params }) => {
+    const row = await getProduct(params.id);
+    await stmt('DELETE FROM products WHERE id = ?').run(row.id);
     return { ok: true };
   }, { auth: true });
 
@@ -427,8 +434,8 @@ function registerAdmin(router, { db, auth, env, loginLimiter, siteDir }) {
 
   router.get('/api/admin/settings', () => siteObject(db, false), { auth: true });
 
-  router.put('/api/admin/settings', ({ body }) => tx(() => {
-    const current = db.getSetting('site', {}) || {};
+  router.put('/api/admin/settings', ({ body }) => tx(async () => {
+    const current = (await db.getSetting('site', {})) || {};
     const next = { ...current };
     delete next.leadEndpoint;
     if (V.hasOwn(body, 'name')) {
@@ -457,26 +464,43 @@ function registerAdmin(router, { db, auth, env, loginLimiter, siteDir }) {
       }
       next.socials = socials;
     }
-    db.setSetting('site', next);
+    await db.setSetting('site', next);
     return siteObject(db, false);
   }), { auth: true });
 
   /* ---------- uploads ---------- */
 
-  router.post('/api/admin/upload', ({ req, res, body }) => {
-    const result = saveUpload(siteDir, body.dataUrl);
+  /* Image as a data URL in JSON. Local disk, or R2 (server-side PUT) when
+     R2 is configured. On Vercel the admin uses /upload/presign instead, since
+     a function body is capped at 4.5 MB. */
+  router.post('/api/admin/upload', async ({ req, res, body }) => {
+    const result = await saveUpload(siteDir, body.dataUrl, storage);
     json(req, res, 201, { url: result.url, bytes: result.bytes });
   }, { auth: true, limit: UPLOAD_LIMIT });
+
+  /* Direct browser upload: { kind: image|video, type, size, filename }.
+     R2: { method: 'PUT', uploadUrl, headers, url, key, expires_in }.
+     Local disk: { method: 'LOCAL' } and the admin uses the upload routes. */
+  router.post('/api/admin/upload/presign', async ({ req, body }) => {
+    if (String(req.headers['sec-fetch-site'] || '').toLowerCase() === 'cross-site') {
+      throw new HttpError(403, 'Uploads must come from the Siroya admin');
+    }
+    return presignUpload(storage, body);
+  }, { auth: true });
 
   /* ---------- leads ---------- */
 
   const leadOut = r => ({ ...r, when: r.when_pref });
 
-  router.get('/api/admin/leads', ({ query }) => {
+  router.get('/api/admin/leads', async ({ query }) => {
     const per = Math.min(200, Math.max(1, parseInt(query.get('per'), 10) || 50));
     const page = Math.max(1, parseInt(query.get('page'), 10) || 1);
-    const total = stmt('SELECT COUNT(*) AS n FROM leads').get().n;
-    const items = stmt('SELECT * FROM leads ORDER BY id DESC LIMIT ? OFFSET ?').all(per, (page - 1) * per).map(leadOut);
+    const [totalRow, rows] = await Promise.all([
+      stmt('SELECT COUNT(*) AS n FROM leads').get(),
+      stmt('SELECT * FROM leads ORDER BY id DESC LIMIT ? OFFSET ?').all(per, (page - 1) * per),
+    ]);
+    const total = totalRow.n;
+    const items = rows.map(leadOut);
     return { items, total, page, per };
   }, { auth: true });
 
@@ -488,8 +512,8 @@ function registerAdmin(router, { db, auth, env, loginLimiter, siteDir }) {
     ['utm_term', 'utm_term'], ['utm_content', 'utm_content'], ['landing', 'Landing page'], ['user_agent', 'User agent'],
   ].map(([key, label]) => ({ key, label }));
 
-  router.get('/api/admin/leads.csv', ({ req, res }) => {
-    const rows = stmt('SELECT * FROM leads ORDER BY id DESC').all();
+  router.get('/api/admin/leads.csv', async ({ req, res }) => {
+    const rows = await stmt('SELECT * FROM leads ORDER BY id DESC').all();
     const csv = Buffer.from(toCsv(LEAD_COLUMNS, rows), 'utf8');
     const day = new Date().toISOString().slice(0, 10);
     sendBuffer(req, res, 200, {

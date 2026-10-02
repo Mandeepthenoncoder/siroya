@@ -12,6 +12,8 @@
      covers complete days ending yesterday (like the Google reports); today
      comes back separately as a small live summary.
    Days are calendar days in Asia/Dubai (UTC+4, no daylight saving).
+   Every function that reads or writes the database is async (the openDb()
+   API returns Promises; the database may be remote), the pure helpers are not.
    This module must not require ./db (db.js requires it for the migration). */
 const { HttpError } = require('./http');
 
@@ -78,10 +80,24 @@ const ANALYTICS_SCHEMA_SQL = `
   ) WITHOUT ROWID;
 `;
 
-/* Accepts a raw DatabaseSync or the openDb() wrapper. */
-function ensureAnalyticsSchema(rawDb) {
-  const raw = rawDb && rawDb.raw && typeof rawDb.raw.exec === 'function' ? rawDb.raw : rawDb;
-  raw.exec(ANALYTICS_SCHEMA_SQL);
+/* Accepts the openDb() wrapper or anything with an exec(sql) method (sync or async). */
+async function ensureAnalyticsSchema(db) {
+  await db.exec(ANALYTICS_SCHEMA_SQL);
+}
+
+/* ---------- database helpers ---------- */
+
+/* Rows changed by one write result: { changes } from db.run / stmt().run, or a
+   libsql ResultSet ({ rowsAffected }) from db.batch. */
+const affected = r => Number(r && (r.rowsAffected !== undefined ? r.rowsAffected : r.changes)) || 0;
+
+/* A list of writes [{ sql, args }], atomically in one round trip when the db
+   has batch(), else one after another. Resolves with one result per write. */
+async function runWrites(db, stmts) {
+  if (typeof db.batch === 'function') return db.batch(stmts);
+  const out = [];
+  for (const s of stmts) out.push(await db.stmt(s.sql).run(...(s.args || [])));
+  return out;
 }
 
 /* ---------- dates (Asia/Dubai) ---------- */
@@ -234,18 +250,20 @@ function deriveSource({ hasGclid = false, source = '', medium = '', refHost = ''
 /* ---------- write ---------- */
 
 const WRITE_SQL = {
-  sessionCount: 'SELECT COUNT(*) AS n FROM (SELECT 1 FROM events WHERE sid = ? AND day = ? LIMIT ?)',
   dayCount: 'SELECT COUNT(*) AS n FROM events WHERE day = ?',
+  /* The per-session cap is checked by the INSERT itself (no row when the
+     session already has its quota), so check and write are one atomic step. */
   insert: `INSERT INTO events (ts, day, type, path, page_type, item, collection, category, sid, is_new,
       source, medium, campaign, ref_host, has_gclid, device)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    WHERE (SELECT COUNT(*) FROM (SELECT 1 FROM events WHERE sid = ? AND day = ? LIMIT ?)) < ?`,
   unroll: 'DELETE FROM events_daily WHERE day = ?',
 };
 
-/* Validates and stores one event. Never throws on bad input: returns
+/* Validates and stores one event. Never rejects on bad input: resolves
    { ok:false, reason } so the endpoint can always answer 204.
    meta: { ua, host, now, maxPerSession } (now in ms, for tests). */
-function recordEvent(db, input, meta = {}) {
+async function recordEvent(db, input, meta = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return { ok: false, reason: 'invalid' };
   const ua = typeof meta.ua === 'string' ? meta.ua : '';
   if (isBot(ua)) return { ok: false, reason: 'bot' };
@@ -257,7 +275,6 @@ function recordEvent(db, input, meta = {}) {
   const t = Number.isFinite(meta.now) ? meta.now : Date.now();
   const day = dubaiDay(t);
   const perSession = Number.isInteger(meta.maxPerSession) && meta.maxPerSession > 0 ? meta.maxPerSession : MAX_EVENTS_PER_SESSION_DAY;
-  if (db.stmt(WRITE_SQL.sessionCount).get(sid, day, perSession).n >= perSession) return { ok: false, reason: 'session_cap' };
 
   const ev = {
     path: cleanPath(input.p),
@@ -276,44 +293,72 @@ function recordEvent(db, input, meta = {}) {
     hasGclid: ev.has_gclid, source: input.src, medium: ev.medium, refHost: ev.ref_host, ownHost: meta.host,
   });
 
-  db.stmt(WRITE_SQL.insert).run(
-    new Date(t).toISOString(), day, type, ev.path, ev.page_type, ev.item, ev.collection, ev.category, sid,
-    ev.is_new, ev.source, ev.medium, ev.campaign, ev.ref_host, ev.has_gclid, ev.device,
-  );
-  // A day's rollup is built once the day is over; an event that still lands on
-  // a rolled-up day (a backfill, a clock change) marks it for a rebuild.
-  db.stmt(WRITE_SQL.unroll).run(day);
+  // One atomic round trip: the capped insert, then (a day's rollup is built once
+  // the day is over) an event that still lands on a rolled-up day (a backfill,
+  // a clock change) marks that day for a rebuild.
+  const [inserted] = await runWrites(db, [
+    {
+      sql: WRITE_SQL.insert,
+      args: [
+        new Date(t).toISOString(), day, type, ev.path, ev.page_type, ev.item, ev.collection, ev.category, sid,
+        ev.is_new, ev.source, ev.medium, ev.campaign, ev.ref_host, ev.has_gclid, ev.device,
+        sid, day, perSession, perSession,
+      ],
+    },
+    { sql: WRITE_SQL.unroll, args: [day] },
+  ]);
+  if (affected(inserted) < 1) return { ok: false, reason: 'session_cap' };
   return { ok: true, source: ev.source, device: ev.device };
 }
 
 /* recordEvent with a site-wide cap per Dubai day. The count starts from the
    database when the day changes, so a restart does not reset it.
-   Returns { record(input, meta), count() }. */
+   Returns { record(input, meta) (async), count() }. A slot is reserved before
+   the write and handed back when the event is dropped, so concurrent calls
+   cannot overshoot the cap. */
 function createEventRecorder(db, { maxPerDay = MAX_EVENTS_PER_DAY, maxPerSession = MAX_EVENTS_PER_SESSION_DAY, now = Date.now } = {}) {
   let day = '';
   let count = 0;
-  function record(input, meta = {}) {
+  let loading = Promise.resolve();
+  async function record(input, meta = {}) {
     const t = Number.isFinite(meta.now) ? meta.now : now();
     const d = dubaiDay(t);
     if (d !== day) {
       day = d;
-      count = Number(db.stmt(WRITE_SQL.dayCount).get(d).n) || 0;
+      count = 0;
+      const p = Promise.resolve().then(() => db.stmt(WRITE_SQL.dayCount).get(d)).then(row => {
+        if (day === d) count += Number(row && row.n) || 0;
+      });
+      loading = p;
+      // a failed count is retried by the next call
+      p.catch(() => { if (loading === p && day === d) day = ''; });
     }
+    await loading;
     if (count >= maxPerDay) return { ok: false, reason: 'daily_cap' };
-    const r = recordEvent(db, input, { ...meta, now: t, maxPerSession });
-    if (r.ok) count++;
+    count++;
+    let r;
+    try {
+      r = await recordEvent(db, input, { ...meta, now: t, maxPerSession });
+    } catch (err) {
+      if (day === d) count--;
+      throw err;
+    }
+    if (!r.ok && day === d) count--;
     return r;
   }
   return { record, count: () => count };
 }
 
-/* Deletes events and rollups older than RETENTION_DAYS. Returns the number of events removed. */
-function purgeOld(db, { now = Date.now() } = {}) {
+/* Deletes events and rollups older than RETENTION_DAYS (one atomic batch).
+   Resolves with the number of events removed. */
+async function purgeOld(db, { now = Date.now() } = {}) {
   const cutoff = dubaiDay(now - RETENTION_DAYS * DAY_MS);
-  const removed = Number(db.stmt('DELETE FROM events WHERE day < ?').run(cutoff).changes);
-  db.stmt('DELETE FROM events_daily WHERE day < ?').run(cutoff);
-  for (const dim of DIMS) db.stmt('DELETE FROM events_daily_dim WHERE dim = ? AND day < ?').run(dim, cutoff);
-  return removed;
+  const results = await runWrites(db, [
+    { sql: 'DELETE FROM events WHERE day < ?', args: [cutoff] },
+    { sql: 'DELETE FROM events_daily WHERE day < ?', args: [cutoff] },
+    ...DIMS.map(dim => ({ sql: 'DELETE FROM events_daily_dim WHERE dim = ? AND day < ?', args: [dim, cutoff] })),
+  ]);
+  return affected(results[0]);
 }
 
 /* ---------- daily rollups ---------- */
@@ -366,12 +411,17 @@ const ROLL_SQL = {
     ON CONFLICT(dim, day, key) DO UPDATE SET views = excluded.views, visitors = excluded.visitors,
       whatsapp_clicks = excluded.whatsapp_clicks, leads = excluded.leads`,
   clearDim: 'DELETE FROM events_daily_dim WHERE dim = ? AND day = ?',
+  /* Marks the day built only while it still holds the number of events the
+     rollup was computed from: an event that arrived meanwhile leaves the day
+     missing, so it is built again next time. */
   insertDay: `INSERT INTO events_daily (day, visitors, page_views, whatsapp_clicks, converted, new_visitors, returning_visitors, built_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?
+    WHERE (SELECT COUNT(*) FROM events WHERE day = ?) = ?
     ON CONFLICT(day) DO UPDATE SET visitors = excluded.visitors, page_views = excluded.page_views,
       whatsapp_clicks = excluded.whatsapp_clicks, converted = excluded.converted,
       new_visitors = excluded.new_visitors, returning_visitors = excluded.returning_visitors, built_at = excluded.built_at`,
   builtDays: 'SELECT day FROM events_daily WHERE day BETWEEN ? AND ?',
+  dayCount: 'SELECT COUNT(*) AS n FROM events WHERE day = ?',
 };
 
 /* Sessions grouped by (source, campaign) -> top rows for one dimension. */
@@ -391,48 +441,69 @@ function sessionRollup(rows, field) {
     .slice(0, KEEP);
 }
 
-/* Aggregates one Dubai day of raw events into the rollup tables (in one
-   transaction). Cost is bounded by the daily event cap. */
-function buildDay(db, day, { now = Date.now() } = {}) {
-  const run = () => {
-    const t = db.stmt(ROLL_SQL.totals).get(day);
-    const nvr = db.stmt(ROLL_SQL.newVsReturning).get(day);
-    const sessions = db.stmt(ROLL_SQL.sessions).all(day);
-    const dims = {
-      source: sessionRollup(sessions, 'source'),
-      campaign: sessionRollup(sessions, 'campaign'),
-      page: db.stmt(ROLL_SQL.pages).all(day),
-      collection: db.stmt(ROLL_SQL.collections).all(day),
-      product: db.stmt(ROLL_SQL.products).all(day),
-      device: db.stmt(ROLL_SQL.devices).all(day).map(r => ({ ...r, key: r.key || 'desktop' })),
-    };
-    for (const dim of DIMS) {
-      db.stmt(ROLL_SQL.clearDim).run(dim, day);
-      for (const r of dims[dim]) {
-        db.stmt(ROLL_SQL.insertDim).run(dim, day, String(r.key), Number(r.views) || 0, Number(r.visitors) || 0,
-          Number(r.whatsapp_clicks) || 0, Number(r.leads) || 0);
-      }
+/* Aggregates one Dubai day of raw events into the rollup tables. Cost is
+   bounded by the daily event cap. The day's events are counted first, the
+   aggregates are read in parallel, and every write goes out as one atomic
+   batch (one round trip, also on a remote database); the day is only marked
+   built if no event arrived while it was read (see ROLL_SQL.insertDay). */
+async function buildDay(db, day, { now = Date.now() } = {}) {
+  const n = Number((await db.stmt(ROLL_SQL.dayCount).get(day)).n) || 0;
+  let t = { visitors: 0, page_views: 0, whatsapp_clicks: 0, converted: 0 };
+  let nvr = { new_visitors: 0, returning_visitors: 0 };
+  const dims = { source: [], campaign: [], page: [], collection: [], product: [], device: [] };
+  if (n > 0) {
+    // An empty day needs no aggregate queries: every figure is zero.
+    const [totals, newVsReturning, sessions, page, collection, product, device] = await Promise.all([
+      db.stmt(ROLL_SQL.totals).get(day),
+      db.stmt(ROLL_SQL.newVsReturning).get(day),
+      db.stmt(ROLL_SQL.sessions).all(day),
+      db.stmt(ROLL_SQL.pages).all(day),
+      db.stmt(ROLL_SQL.collections).all(day),
+      db.stmt(ROLL_SQL.products).all(day),
+      db.stmt(ROLL_SQL.devices).all(day),
+    ]);
+    t = totals;
+    nvr = newVsReturning;
+    dims.source = sessionRollup(sessions, 'source');
+    dims.campaign = sessionRollup(sessions, 'campaign');
+    dims.page = page;
+    dims.collection = collection;
+    dims.product = product;
+    dims.device = device.map(r => ({ ...r, key: r.key || 'desktop' }));
+  }
+  const writes = [];
+  for (const dim of DIMS) {
+    writes.push({ sql: ROLL_SQL.clearDim, args: [dim, day] });
+    for (const r of dims[dim]) {
+      writes.push({
+        sql: ROLL_SQL.insertDim,
+        args: [dim, day, String(r.key), Number(r.views) || 0, Number(r.visitors) || 0,
+          Number(r.whatsapp_clicks) || 0, Number(r.leads) || 0],
+      });
     }
-    db.stmt(ROLL_SQL.insertDay).run(day, t.visitors, t.page_views, t.whatsapp_clicks, t.converted,
-      nvr.new_visitors, nvr.returning_visitors, new Date(now).toISOString());
-  };
-  if (typeof db.tx === 'function') db.tx(run);
-  else run();
+  }
+  writes.push({
+    sql: ROLL_SQL.insertDay,
+    args: [day, t.visitors, t.page_views, t.whatsapp_clicks, t.converted,
+      nvr.new_visitors, nvr.returning_visitors, new Date(now).toISOString(), day, n],
+  });
+  await runWrites(db, writes);
 }
 
 /* Days in [from, to] (all before today) that have no rollup yet. */
-function missingDays(db, from, to) {
-  const built = new Set(db.stmt(ROLL_SQL.builtDays).all(from, to).map(r => r.day));
+async function missingDays(db, from, to) {
+  const built = new Set((await db.stmt(ROLL_SQL.builtDays).all(from, to)).map(r => r.day));
   return daysBetween(from, to).filter(d => !built.has(d));
 }
 
-/* Builds every missing rollup in [from, to]; never touches today or later. */
-function ensureRollups(db, from, to, { now = Date.now() } = {}) {
+/* Builds every missing rollup in [from, to], one day after another; never
+   touches today or later. Resolves with the number of days built. */
+async function ensureRollups(db, from, to, { now = Date.now() } = {}) {
   const lastClosed = addDays(dubaiDay(now), -1);
   const end = to < lastClosed ? to : lastClosed;
   if (from > end) return 0;
-  const days = missingDays(db, from, end);
-  for (const day of days) buildDay(db, day, { now });
+  const days = await missingDays(db, from, end);
+  for (const day of days) await buildDay(db, day, { now });
   return days.length;
 }
 
@@ -469,23 +540,26 @@ const dimRows = (db, dim, from, to, limit) => db.stmt(SQL.dim(DIM_ORDER[dim])).a
 /* Rates are sent unrounded; the admin formats them (one decimal). */
 const rate = (part, whole) => (whole > 0 ? part / whole : 0);
 
-const leadsBetween = (db, from, to) => db.stmt(SQL.leadsTotal).get(dubaiDayStartIso(from), dubaiDayStartIso(addDays(to, 1))).n;
+const leadsBetween = async (db, from, to) => (await db.stmt(SQL.leadsTotal).get(dubaiDayStartIso(from), dubaiDayStartIso(addDays(to, 1)))).n;
 
-function periodTotals(db, from, to) {
-  const t = db.stmt(SQL.totals).get(from, to);
+async function periodTotals(db, from, to) {
+  const [t, leads] = await Promise.all([db.stmt(SQL.totals).get(from, to), leadsBetween(db, from, to)]);
   return {
     visitors: t.visitors,
     page_views: t.page_views,
     whatsapp_clicks: t.whatsapp_clicks,
-    leads: leadsBetween(db, from, to),
+    leads,
     conversion_rate: rate(t.converted, t.visitors),
   };
 }
 
-function dailySeries(db, from, to) {
-  const rows = new Map(db.stmt(SQL.daily).all(from, to).map(row => [row.day, row]));
-  const leads = new Map(db.stmt(SQL.leadsDaily)
-    .all(dubaiDayStartIso(from), dubaiDayStartIso(addDays(to, 1))).map(row => [row.day, row.n]));
+async function dailySeries(db, from, to) {
+  const [dailyRows, leadRows] = await Promise.all([
+    db.stmt(SQL.daily).all(from, to),
+    db.stmt(SQL.leadsDaily).all(dubaiDayStartIso(from), dubaiDayStartIso(addDays(to, 1))),
+  ]);
+  const rows = new Map(dailyRows.map(row => [row.day, row]));
+  const leads = new Map(leadRows.map(row => [row.day, row.n]));
   return daysBetween(from, to).map(day => {
     const row = rows.get(day);
     return {
@@ -498,34 +572,37 @@ function dailySeries(db, from, to) {
   });
 }
 
-function collectionLabel(db, slug) {
-  const col = db.stmt(SQL.collectionName).get(slug);
-  if (col) return col.name;
+async function collectionLabel(db, slug) {
   const catSlug = slug.startsWith('category-') ? slug.slice(9) : slug;
-  const cat = db.stmt(SQL.categoryName).get(catSlug);
+  const [col, cat] = await Promise.all([
+    db.stmt(SQL.collectionName).get(slug),
+    db.stmt(SQL.categoryName).get(catSlug),
+  ]);
+  if (col) return col.name;
   return cat ? cat.name : slug;
 }
 
 /* Today so far, live from the raw events (at most one day of them, which the
    daily cap bounds). { day, visitors, page_views, whatsapp_clicks, leads } */
-function todaySummary(db, opts = {}) {
+async function todaySummary(db, opts = {}) {
   const nowMs = Number.isFinite(opts.now) ? opts.now : Date.now();
   const day = dubaiDay(nowMs);
-  const t = db.stmt(ROLL_SQL.totals).get(day);
+  const [t, leads] = await Promise.all([db.stmt(ROLL_SQL.totals).get(day), leadsBetween(db, day, day)]);
   return {
     day,
     visitors: t.visitors,
     page_views: t.page_views,
     whatsapp_clicks: t.whatsapp_clicks,
-    leads: leadsBetween(db, day, day),
+    leads,
   };
 }
 
 /* Dashboard report. range: 7 | 30 | 90 complete days ending yesterday (Dubai),
    compared with the same number of days before. Read from daily rollups;
-   missing ones (normally only yesterday's) are built first.
-   Rates are fractions (0.0123 = 1.23%). opts.now (ms) is for tests. */
-function trafficReport(db, range, opts = {}) {
+   missing ones (normally only yesterday's) are built first. Every read after
+   that runs in parallel. Rates are fractions (0.0123 = 1.23%). opts.now (ms)
+   is for tests. Rejects with HttpError 400 for another range. */
+async function trafficReport(db, range, opts = {}) {
   const r = Number(range);
   if (!RANGES.includes(r)) throw new HttpError(400, 'Range must be 7, 30 or 90 days');
   const nowMs = Number.isFinite(opts.now) ? opts.now : Date.now();
@@ -535,29 +612,25 @@ function trafficReport(db, range, opts = {}) {
   const prevTo = addDays(from, -1);
   const prevFrom = addDays(prevTo, -(r - 1));
 
-  ensureRollups(db, prevFrom, to, { now: nowMs });
+  await ensureRollups(db, prevFrom, to, { now: nowMs });
 
-  const nvr = db.stmt(SQL.totals).get(from, to);
   const counts = x => ({ visitors: x.visitors, whatsapp_clicks: x.whatsapp_clicks, leads: x.leads });
+  const named = (rows, fn) => Promise.all(rows.map(fn));
 
-  return {
-    range: r,
-    from,
-    to,
-    previous_from: prevFrom,
-    previous_to: prevTo,
-    totals: periodTotals(db, from, to),
-    previous: periodTotals(db, prevFrom, prevTo),
-    daily: dailySeries(db, from, to),
-    previous_daily: dailySeries(db, prevFrom, prevTo),
-    sources: dimRows(db, 'source', from, to, 25).map(x => ({ source: x.key || 'direct', ...counts(x) })),
-    campaigns: dimRows(db, 'campaign', from, to, TOP_N).map(x => ({ campaign: x.key, ...counts(x) })),
-    top_pages: dimRows(db, 'page', from, to, TOP_N).map(x => ({ path: x.key, views: x.views, visitors: x.visitors })),
-    top_collections: dimRows(db, 'collection', from, to, TOP_N).map(x => ({
-      collection: x.key, name: collectionLabel(db, x.key), views: x.views,
-    })),
-    top_products: dimRows(db, 'product', from, to, TOP_N).map(x => {
-      const p = db.stmt(SQL.productName).get(x.key, x.key, x.key);
+  const [nvr, totals, previous, daily, previousDaily, sources, campaigns, topPages, topCollections, topProducts, devices, todayLive] = await Promise.all([
+    db.stmt(SQL.totals).get(from, to),
+    periodTotals(db, from, to),
+    periodTotals(db, prevFrom, prevTo),
+    dailySeries(db, from, to),
+    dailySeries(db, prevFrom, prevTo),
+    dimRows(db, 'source', from, to, 25),
+    dimRows(db, 'campaign', from, to, TOP_N),
+    dimRows(db, 'page', from, to, TOP_N),
+    dimRows(db, 'collection', from, to, TOP_N).then(rows => named(rows, async x => ({
+      collection: x.key, name: await collectionLabel(db, x.key), views: x.views,
+    }))),
+    dimRows(db, 'product', from, to, TOP_N).then(rows => named(rows, async x => {
+      const p = await db.stmt(SQL.productName).get(x.key, x.key, x.key);
       return {
         item: x.key,
         name: p ? p.name : x.key,
@@ -566,10 +639,29 @@ function trafficReport(db, range, opts = {}) {
         whatsapp_clicks: x.whatsapp_clicks,
         leads: x.leads,
       };
-    }),
-    devices: dimRows(db, 'device', from, to, 10).map(x => ({ device: x.key || 'desktop', visitors: x.visitors })),
+    })),
+    dimRows(db, 'device', from, to, 10),
+    todaySummary(db, { now: nowMs }),
+  ]);
+
+  return {
+    range: r,
+    from,
+    to,
+    previous_from: prevFrom,
+    previous_to: prevTo,
+    totals,
+    previous,
+    daily,
+    previous_daily: previousDaily,
+    sources: sources.map(x => ({ source: x.key || 'direct', ...counts(x) })),
+    campaigns: campaigns.map(x => ({ campaign: x.key, ...counts(x) })),
+    top_pages: topPages.map(x => ({ path: x.key, views: x.views, visitors: x.visitors })),
+    top_collections: topCollections,
+    top_products: topProducts,
+    devices: devices.map(x => ({ device: x.key || 'desktop', visitors: x.visitors })),
     new_vs_returning: { new: nvr.new_visitors, returning: nvr.returning_visitors },
-    today: todaySummary(db, { now: nowMs }),
+    today: todayLive,
     generated_at: new Date(nowMs).toISOString(),
   };
 }

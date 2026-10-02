@@ -2,14 +2,19 @@
   "name": "siroya-web",
   "version": "1.0.0",
   "private": true,
-  "description": "Siroya Jewellers website, admin and API (zero dependencies, Node 22+)",
+  "description": "Siroya Jewellers website, admin and API (Node 22; SQLite locally, Turso + Cloudflare R2 on Vercel)",
   "main": "server/server.js",
   "engines": {
-    "node": ">=22.13"
+    "node": "22.x"
   },
   "scripts": {
     "start": "node --no-warnings=ExperimentalWarning server/server.js",
     "dev": "node --no-warnings=ExperimentalWarning server/server.js --port=5180",
-    "test": "node --no-warnings=ExperimentalWarning --test server/test/"
+    "test": "node --no-warnings=ExperimentalWarning --test server/test/",
+    "copy-to-turso": "node scripts/copy-local-to-turso.js"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.18.0",
+    "aws4fetch": "^1.0.20"
   }
 }

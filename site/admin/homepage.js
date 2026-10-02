@@ -9,7 +9,7 @@
 import { $, $$, h, fill, icon, iconBtn, api, itemOf, listOf, normProduct, getCollections, getCategories, toast, confirmDialog,
   pageHead, errorState, skeletonForm, field, editFrame, dirtyTracker, imgSrc, nextId, dragSort, moveItem,
   ensureAuth, errorText, ApiError } from "./lib.js";
-import { runUpload, imageField } from "./media.js";
+import { runUpload, imageField, directUpload } from "./media.js";
 
 /* ======================= Rules (kept in step with the server) ======================= */
 const MODES = ["image", "slideshow", "video"];
@@ -215,7 +215,7 @@ async function prepareBanner(file, maxEdge) {
   if (blob.size > 10 * 1048576) throw new Error("This image is still over 10 MB after resizing. Please use a smaller photo.");
   const dataUrl = await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = () => rej(new Error("This photo could not be read.")); fr.readAsDataURL(blob); });
   const base = (file.name || "banner").replace(/\.[^.]+$/, "").replace(/[^\w.-]+/g, "-").slice(0, 80) || "banner";
-  return { dataUrl, filename: `${base}.jpg`, width: w, height: hh, bytes: blob.size, preview: URL.createObjectURL(blob), srcW: w0, srcH: h0 };
+  return { dataUrl, blob, filename: `${base}.jpg`, width: w, height: hh, bytes: blob.size, preview: URL.createObjectURL(blob), srcW: w0, srcH: h0 };
 }
 
 /** One banner photo: frame, Upload/Replace, Remove, progress, a size note and inline errors. */
@@ -317,8 +317,31 @@ function videoType(file) {
   if ((!type || type === "application/octet-stream") && ext === "webm") return "video/webm";
   return type || (ext === "mov" ? "video/quicktime" : "");
 }
+/** First 4 KB look like the declared container (MP4 "ftyp" box / WebM EBML
+    header)? Media storage cannot inspect uploads, so the admin checks here. */
+async function looksLikeVideo(file, type) {
+  const b = new Uint8Array(await file.slice(0, 4096).arrayBuffer());
+  if (b.length < 12) return false;
+  if (type === "video/mp4") return b[4] === 0x66 && b[5] === 0x74 && b[6] === 0x79 && b[7] === 0x70; // "ftyp"
+  if (type === "video/webm") return b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3;
+  return false;
+}
+
+/** Straight to media storage when the server uses it (production), otherwise
+    POST the file as the raw request body. Resolves with the saved url. */
+async function sendVideo(job, onProgress) {
+  const type = videoType(job.file);
+  if (type === "video/mp4" || type === "video/webm") {
+    if (!(await looksLikeVideo(job.file, type))) throw new ApiError("This file is not a playable MP4 or WebM video. Please export it again.", 400);
+    if (job.file.size > 80 * 1048576) throw new ApiError("This video is over 80 MB. Please export a shorter or smaller version.", 413);
+    const url = await directUpload({ kind: "video", blob: job.file, type, filename: job.file.name, onProgress: p => { job.pct = p; onProgress(); }, holder: job });
+    if (url) return url;
+  }
+  return sendVideoLocal(job, onProgress);
+}
+
 /** POST the file as the raw request body; resolves with the saved url. */
-function sendVideo(job, onProgress, retried = false) {
+function sendVideoLocal(job, onProgress, retried = false) {
   return new Promise((resolve, reject) => {
     const x = new XMLHttpRequest();
     job.xhr = x;
@@ -332,7 +355,7 @@ function sendVideo(job, onProgress, retried = false) {
     x.onload = () => {
       let data = null; try { data = JSON.parse(x.responseText); } catch { /* not JSON */ }
       if (x.status >= 200 && x.status < 300 && data?.url) return resolve(data.url);
-      if (x.status === 401 && !retried) return ensureAuth().then(() => sendVideo(job, onProgress, true)).then(resolve, reject);
+      if (x.status === 401 && !retried) return ensureAuth().then(() => sendVideoLocal(job, onProgress, true)).then(resolve, reject);
       const msg = data?.error ? data.error
         : x.status === 413 ? "This video is over 80 MB. Please export a shorter or smaller version."
         : x.status === 415 ? "Please choose an MP4 or WebM video."

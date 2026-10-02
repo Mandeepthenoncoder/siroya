@@ -1,6 +1,6 @@
 # Siroya server
 
-One Node process serves the public site, the admin app, uploaded images and the JSON API. It has no npm dependencies and needs Node 22.13 or newer (it uses the built-in `node:sqlite`).
+One Node process serves the public site, the admin app, uploaded images and the JSON API. It needs Node 22 and two small npm packages (`npm install`): `@libsql/client` for the SQLite database and `aws4fetch` for Cloudflare R2. Locally it uses the SQLite file `server/data/siroya.db` and keeps uploads in `site/uploads/`; on Vercel the same code runs as a function with Turso and R2 (see `DEPLOY.md` in the project root).
 
 ```
 npm start          # http://localhost:5173 (or PORT from server/.env)
@@ -130,7 +130,8 @@ Image fields accept `assets/...`, `uploads/...` or an `https://` URL. Store `map
 ```
 server/server.js         entry: config, database, HTTP pipeline, error handling, logging
 server/lib/env.js        .env loader (creates it on first run)
-server/lib/db.js         node:sqlite, statement cache, transactions, migrations
+server/lib/db.js         @libsql/client (SQLite file or Turso), async queries, transactions, migrations
+server/lib/storage.js    media storage: local disk or Cloudflare R2 (presigned uploads)
 server/lib/seed.js       first-run import of site/assets/js/data.js
 server/lib/http.js       JSON responses, body limits, cookies, gzip
 server/lib/auth.js       signed session cookie, constant-time password check

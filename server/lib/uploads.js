@@ -1,10 +1,8 @@
 'use strict';
 /* Image uploads sent as data URLs. Verifies magic bytes against the declared
-   type and writes site/uploads/<yyyy>/<mm>/<random-16-hex>.<ext>. */
-const fs = require('node:fs');
-const path = require('node:path');
-const crypto = require('node:crypto');
+   type and stores uploads/<yyyy>/<mm>/<random-16-hex>.<ext> (see storage.js). */
 const { HttpError } = require('./http');
+const { createStorage, newKey } = require('./storage');
 
 const MAX_BYTES = 10 * 1024 * 1024;
 const TYPES = {
@@ -32,16 +30,14 @@ function decodeDataUrl(dataUrl) {
   return { kind, ext: TYPES[kind].ext, buf };
 }
 
-function saveUpload(siteDir, dataUrl) {
-  const { ext, buf } = decodeDataUrl(dataUrl);
-  const d = new Date();
-  const yyyy = String(d.getFullYear());
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dir = path.join(siteDir, 'uploads', yyyy, mm);
-  fs.mkdirSync(dir, { recursive: true });
-  const name = `${crypto.randomBytes(8).toString('hex')}.${ext}`;
-  fs.writeFileSync(path.join(dir, name), buf, { flag: 'wx' });
-  return { url: `uploads/${yyyy}/${mm}/${name}`, bytes: buf.length };
+/* Saves to local disk (site/uploads/...) or, when given an R2 storage, to R2.
+   Resolves { url, bytes }: "uploads/<yyyy>/<mm>/<hex>.<ext>" locally, the
+   public https URL on R2. */
+async function saveUpload(siteDir, dataUrl, storage) {
+  const { kind, ext, buf } = decodeDataUrl(dataUrl);
+  const store = storage || createStorage({ siteDir, env: {} });
+  const url = await store.put(newKey(ext), buf, `image/${kind}`);
+  return { url, bytes: buf.length };
 }
 
 module.exports = { saveUpload, decodeDataUrl, MAX_BYTES };

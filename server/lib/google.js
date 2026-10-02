@@ -403,9 +403,14 @@ function decryptKey(aesKey, value, email) {
 
 /* ---------- client ---------- */
 
-/* Options: getSetting/setSetting (required), env, now, timeoutMs,
+/* Options: getSetting/setSetting (required; may return Promises, as the
+   openDb() ones do, or plain values), env, now, timeoutMs,
    secret (encrypts the private key at rest; defaults to env.SESSION_SECRET),
-   wipe (called after a key is replaced or removed, to scrub old copies). */
+   wipe (sync or async; called after a key is replaced or removed, to scrub
+   old copies).
+   Returns { status, save, disconnect, test, searchReport, analyticsReport,
+   ready }: every method is async; ready settles (never rejects) once a key
+   saved before the secret was set has been encrypted. */
 function createGoogleClient({
   getSetting, setSetting, env = {}, now = Date.now, timeoutMs = TIMEOUT_MS,
   secret = env && env.SESSION_SECRET, wipe = null,
@@ -420,23 +425,33 @@ function createGoogleClient({
   let tokenInflight = null; // { fp, promise }
   let generation = 0; // bumps when the key changes or is removed
   const mem = new Map(); // cache key -> { at, data }
-  let memLoaded = false;
+  let memLoaded = null; // Promise of the one settings read (loadMem)
   const inflight = new Map();
   let pemCache = null; // { enc, email, pem }: the last decrypted key
 
-  function scrub() {
+  /* Every read-modify-write of the settings rows runs one at a time, so a
+     report that finishes while a key is being replaced cannot write the old
+     config back. Only top-level operations queue here (never nested). */
+  let queue = Promise.resolve();
+  function serial(fn) {
+    const run = queue.then(fn, fn);
+    queue = run.catch(() => {});
+    return run;
+  }
+
+  async function scrub() {
     if (typeof wipe !== 'function') return;
-    try { wipe(); } catch { /* best effort; never block a disconnect */ }
+    try { await wipe(); } catch { /* best effort; never block a disconnect */ }
   }
 
   /* Raw settings row (the key encrypted when a secret is set). */
-  function loadRaw() {
-    const v = getSetting(SETTINGS_KEY, null);
+  async function loadRaw() {
+    const v = await getSetting(SETTINGS_KEY, null);
     return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
   }
   /* Settings with private_key as a usable PEM ('' when missing or unreadable). */
-  function load() {
-    const cfg = { ...loadRaw() };
+  async function load() {
+    const cfg = { ...(await loadRaw()) };
     if (cfg.private_key_enc) {
       if (pemCache && pemCache.enc === cfg.private_key_enc && pemCache.email === cfg.client_email) {
         cfg.private_key = pemCache.pem;
@@ -448,7 +463,7 @@ function createGoogleClient({
     return cfg;
   }
   /* Writes a full config; the PEM is encrypted first when a secret is set. */
-  function persist(cfg) {
+  async function persist(cfg) {
     const row = { ...cfg };
     delete row.private_key_enc;
     if (aesKey && row.private_key) {
@@ -459,41 +474,44 @@ function createGoogleClient({
       delete row.private_key;
     } else if (!row.private_key) {
       delete row.private_key;
-      const raw = loadRaw();
+      const raw = await loadRaw();
       // keep an encrypted key this server cannot read, so the error stays visible
       if (raw.private_key_enc && cfg.client_email && cfg.client_email === raw.client_email) row.private_key_enc = raw.private_key_enc;
     }
-    setSetting(SETTINGS_KEY, row);
+    await setSetting(SETTINGS_KEY, row);
   }
-  function store(patch) {
-    const next = { ...load(), ...patch };
-    persist(next);
+  async function storeNow(patch) {
+    const next = { ...(await load()), ...patch };
+    await persist(next);
     return next;
   }
+  const store = patch => serial(() => storeNow(patch));
   const keyUnreadable = cfg => Boolean(cfg.client_email && cfg.private_key_enc && !cfg.private_key);
   const isConnected = cfg => Boolean(cfg.client_email && cfg.private_key);
   const fingerprint = cfg => crypto.createHash('sha256')
     .update(`${cfg.client_email}\n${cfg.private_key_id || ''}\n${cfg.private_key}`).digest('hex').slice(0, 24);
 
-  /* A key saved before a secret was configured is encrypted on first start. */
-  (function encryptLegacyKey() {
+  /* A key saved before a secret was configured is encrypted on first start.
+     Exposed as client.ready, which never rejects. It starts on the next
+     microtask, so creating a client never touches the settings synchronously. */
+  const ready = serial(async () => {
     try {
-      const raw = loadRaw();
+      const raw = await loadRaw();
       if (aesKey && raw.private_key && raw.client_email) {
-        persist(raw);
-        scrub();
+        await persist(raw);
+        await scrub();
       }
     } catch { /* settings not ready (tests); load() still works with plaintext */ }
-  })();
+  });
 
-  function requireConnected() {
-    const cfg = load();
+  async function requireConnected() {
+    const cfg = await load();
     if (!isConnected(cfg)) throw new GoogleError(409, 'Google is not connected', 'not_connected');
     return cfg;
   }
 
-  function status() {
-    const cfg = load();
+  async function status() {
+    const cfg = await load();
     return {
       connected: isConnected(cfg),
       client_email: cfg.client_email || '',
@@ -507,20 +525,24 @@ function createGoogleClient({
 
   /* ----- cache ----- */
 
+  /* Loads the settings copy once; concurrent callers share the one read. */
   function loadMem() {
-    if (memLoaded) return;
-    memLoaded = true;
-    let saved = null;
-    try { saved = getSetting(CACHE_SETTINGS_KEY, null); } catch { saved = null; }
-    if (!saved || typeof saved !== 'object') return;
-    for (const [key, entry] of Object.entries(saved)) {
-      if (entry && Number.isFinite(entry.at) && entry.data && typeof entry.data === 'object' && !mem.has(key)) mem.set(key, entry);
+    if (!memLoaded) {
+      memLoaded = (async () => {
+        let saved = null;
+        try { saved = await getSetting(CACHE_SETTINGS_KEY, null); } catch { saved = null; }
+        if (!saved || typeof saved !== 'object') return;
+        for (const [key, entry] of Object.entries(saved)) {
+          if (entry && Number.isFinite(entry.at) && entry.data && typeof entry.data === 'object' && !mem.has(key)) mem.set(key, entry);
+        }
+      })();
     }
+    return memLoaded;
   }
 
   /* Keeps only entries for the current property settings and under a week old. */
-  function persistCache() {
-    const cfg = loadRaw();
+  async function persistCache() {
+    const cfg = await loadRaw();
     const t = now();
     const keep = {};
     for (const [key, entry] of mem) {
@@ -528,13 +550,13 @@ function createGoogleClient({
       if (current && t - entry.at < CACHE_KEEP_MS) keep[key] = entry;
       else mem.delete(key);
     }
-    try { setSetting(CACHE_SETTINGS_KEY, keep); } catch { /* memory cache still works */ }
+    try { await setSetting(CACHE_SETTINGS_KEY, keep); } catch { /* memory cache still works */ }
   }
 
-  function clearCache() {
+  async function clearCache() {
     mem.clear();
     inflight.clear();
-    try { setSetting(CACHE_SETTINGS_KEY, {}); } catch { /* ignore */ }
+    try { await setSetting(CACHE_SETTINGS_KEY, {}); } catch { /* ignore */ }
   }
 
   const present = (entry, flags) => ({ ...entry.data, fetched_at: iso(entry.at), ...flags });
@@ -542,14 +564,15 @@ function createGoogleClient({
   /* windowTo: the last day the report should cover now. An entry for an older
      window (fetched before Dubai midnight) is out of date whatever its age;
      it is only served again as stale data when Google fails. */
-  function cached(key, refresh, fetcher, windowTo) {
-    loadMem();
+  async function cached(key, refresh, fetcher, windowTo) {
+    await loadMem();
+    // From here to inflight.set there is no await, so concurrent callers share one fetch.
     const entry = mem.get(key);
     const t = now();
     if (entry && (!windowTo || (entry.data && entry.data.to === windowTo))) {
       const age = t - entry.at;
-      if (!refresh && age >= 0 && age < CACHE_TTL_MS) return Promise.resolve(present(entry, { cached: true }));
-      if (refresh && age >= 0 && age < REFRESH_MIN_MS) return Promise.resolve(present(entry, { cached: true, throttled: true }));
+      if (!refresh && age >= 0 && age < CACHE_TTL_MS) return present(entry, { cached: true });
+      if (refresh && age >= 0 && age < REFRESH_MIN_MS) return present(entry, { cached: true, throttled: true });
     }
     if (inflight.has(key)) return inflight.get(key);
     const gen = generation;
@@ -557,15 +580,16 @@ function createGoogleClient({
       try {
         const data = await fetcher();
         const fresh = { at: now(), data };
-        if (gen === generation) {
+        await serial(async () => {
+          if (gen !== generation) return;
           mem.set(key, fresh);
-          persistCache();
-          store({ last_sync: iso(fresh.at), last_error: '' });
-        }
+          await persistCache();
+          await storeNow({ last_sync: iso(fresh.at), last_error: '' });
+        });
         return present(fresh, { cached: false });
       } catch (err) {
         const message = err instanceof GoogleError ? err.message : 'Could not load data from Google. Try again in a few minutes.';
-        if (gen === generation) store({ last_error: message });
+        await serial(async () => { if (gen === generation) await storeNow({ last_error: message }); });
         if (entry && err instanceof GoogleError && err.transient) {
           return present(entry, { cached: true, stale: true, error: message });
         }
@@ -743,34 +767,31 @@ function createGoogleClient({
     };
   }
 
-  function searchReport(range, { refresh = false } = {}) {
-    try {
-      const r = parseRange(range, SEARCH_RANGES);
-      const cfg = requireConnected();
-      if (!cfg.gsc_site) throw new GoogleError(409, 'Choose a Search Console property in Settings > Google connection first.', 'no_site');
-      return cached(`search:${cfg.gsc_site}:${r}`, Boolean(refresh), () => fetchSearch(cfg, r), windows(now(), r).to);
-    } catch (err) {
-      return Promise.reject(err);
-    }
+  async function searchReport(range, { refresh = false } = {}) {
+    const r = parseRange(range, SEARCH_RANGES);
+    const cfg = await requireConnected();
+    if (!cfg.gsc_site) throw new GoogleError(409, 'Choose a Search Console property in Settings > Google connection first.', 'no_site');
+    return cached(`search:${cfg.gsc_site}:${r}`, Boolean(refresh), () => fetchSearch(cfg, r), windows(now(), r).to);
   }
 
-  function analyticsReport(range, { refresh = false } = {}) {
-    try {
-      const r = parseRange(range, ANALYTICS_RANGES);
-      const cfg = requireConnected();
-      if (!cfg.ga4_property) throw new GoogleError(409, 'Enter the GA4 property ID in Settings > Google connection first.', 'no_property');
-      return cached(`analytics:${cfg.ga4_property}:${r}`, Boolean(refresh), () => fetchAnalytics(cfg, r), windows(now(), r).to);
-    } catch (err) {
-      return Promise.reject(err);
-    }
+  async function analyticsReport(range, { refresh = false } = {}) {
+    const r = parseRange(range, ANALYTICS_RANGES);
+    const cfg = await requireConnected();
+    if (!cfg.ga4_property) throw new GoogleError(409, 'Enter the GA4 property ID in Settings > Google connection first.', 'no_property');
+    return cached(`analytics:${cfg.ga4_property}:${r}`, Boolean(refresh), () => fetchAnalytics(cfg, r), windows(now(), r).to);
   }
 
   /* ----- connection management ----- */
 
-  /* input: { service_account_json?, gsc_site?, ga4_property? }. Returns status(). */
-  function save(input) {
+  /* input: { service_account_json?, gsc_site?, ga4_property? }. Resolves with status(). */
+  async function save(input) {
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new GoogleError(400, 'Expected a JSON object', 'invalid_input');
-    const cfg = load();
+    await serial(() => saveNow(input));
+    return status();
+  }
+
+  async function saveNow(input) {
+    const cfg = await load();
     const next = { ...cfg };
     let keyChanged = false;
     const hadKey = Boolean(cfg.private_key || cfg.private_key_enc);
@@ -789,38 +810,45 @@ function createGoogleClient({
     if (hasOwn(input, 'ga4_property')) next.ga4_property = parseGa4Property(input.ga4_property);
     const configChanged = (next.gsc_site || '') !== (cfg.gsc_site || '') || (next.ga4_property || '') !== (cfg.ga4_property || '');
     if (configChanged && !keyChanged) next.last_error = '';
-    persist(next);
+    await persist(next);
     if (keyChanged) {
       generation++;
       token = null;
       tokenInflight = null;
       pemCache = null;
-      clearCache();
-      if (hadKey) scrub(); // the old key must not linger in freed pages or the WAL
+      await clearCache();
+      if (hadKey) await scrub(); // the old key must not linger in freed pages or the WAL
     } else if (configChanged) {
-      loadMem();
-      persistCache();
+      await loadMem();
+      await persistCache();
     }
-    return status();
   }
 
   /* Wipes the key, token and cached reports. Property names stay for reconnecting.
-     The key still works at Google until it is deleted there (the admin says so). */
-  function disconnect() {
-    const cfg = loadRaw();
+     The key still works at Google until it is deleted there (the admin says so).
+     Resolves with status(). */
+  async function disconnect() {
+    // Reports that finish from now on belong to the old key and are not stored.
     generation++;
     token = null;
     tokenInflight = null;
     pemCache = null;
-    setSetting(SETTINGS_KEY, { gsc_site: cfg.gsc_site || '', ga4_property: cfg.ga4_property || '' });
-    clearCache();
-    scrub();
+    await serial(async () => {
+      const cfg = await loadRaw();
+      generation++;
+      token = null;
+      tokenInflight = null;
+      pemCache = null;
+      await setSetting(SETTINGS_KEY, { gsc_site: cfg.gsc_site || '', ga4_property: cfg.ga4_property || '' });
+      await clearCache();
+      await scrub();
+    });
     return status();
   }
 
   /* Token + Search Console site list + (if set) a 1-day GA4 report. */
   async function test() {
-    const cfg = requireConnected();
+    const cfg = await requireConnected();
     const out = { ok: false, client_email: cfg.client_email, sites: [], site_permissions: [], gsc_ok: null, ga4_ok: null, error: '' };
     const errors = [];
     try {
@@ -829,7 +857,7 @@ function createGoogleClient({
       out.error = err instanceof GoogleError ? err.message : 'Could not sign in to Google with this key.';
       out.gsc_ok = false;
       if (cfg.ga4_property) out.ga4_ok = false;
-      store({ last_error: out.error });
+      await store({ last_error: out.error });
       return out;
     }
     try {
@@ -869,11 +897,11 @@ function createGoogleClient({
     }
     out.ok = errors.length === 0;
     out.error = errors.join(' ');
-    store({ last_error: out.error });
+    await store({ last_error: out.error });
     return out;
   }
 
-  return { status, save, disconnect, test, searchReport, analyticsReport };
+  return { status, save, disconnect, test, searchReport, analyticsReport, ready };
 }
 
 module.exports = {

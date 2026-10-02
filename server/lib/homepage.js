@@ -6,8 +6,10 @@
                                message the admin can show as is.
    getHomepage(db)          -> stored object (defaults when the key is missing).
    seedHomepage(db)         -> writes the defaults once, when the key is missing.
-   resolveFeatured(db, home)-> copy of home with featured.resolved filled in. */
+   resolveFeatured(db, home)-> copy of home with featured.resolved filled in.
+   The db functions are async (they return Promises). */
 const { HttpError } = require('./http');
+const { mediaBase } = require('./storage');
 
 const KEY = 'homepage';
 const MODES = ['image', 'slideshow', 'video'];
@@ -111,14 +113,23 @@ function link(value, label) {
   return s;
 }
 
-/* Image or video path inside the site: assets/... or uploads/... only. */
+/* Image or video path inside the site (assets/... or uploads/...), or a file
+   uploaded to media storage (R2_PUBLIC_URL/uploads/...). */
 function media(value, label, kind) {
   let s = line(value, CAPS.media, label);
   if (!s) return '';
-  s = s.replace(/^\/+/, '');
   const where = kind === 'video' ? 'an uploaded video (uploads/...)' : 'an uploaded image (uploads/...) or a site image (assets/...)';
-  if (s.includes('..') || !MEDIA_RE.test(s) || s.split('/').some(seg => !seg || seg.startsWith('.'))) {
-    throw bad(`${label} must be ${where}`);
+  if (/^https:\/\//i.test(s)) {
+    const base = mediaBase();
+    const rest = base && s.startsWith(`${base}/`) ? s.slice(base.length + 1) : '';
+    if (!rest || !rest.startsWith('uploads/') || rest.includes('..') || !MEDIA_RE.test(rest) || rest.split('/').some(seg => !seg || seg.startsWith('.'))) {
+      throw bad(`${label} must be ${where}`);
+    }
+  } else {
+    s = s.replace(/^\/+/, '');
+    if (s.includes('..') || !MEDIA_RE.test(s) || s.split('/').some(seg => !seg || seg.startsWith('.'))) {
+      throw bad(`${label} must be ${where}`);
+    }
   }
   if (kind === 'video' && !VIDEO_EXT_RE.test(s)) throw bad(`${label} must be an MP4 or WebM video (.mp4 or .webm)`);
   if (kind === 'image' && !IMAGE_EXT_RE.test(s)) throw bad(`${label} must be an image (.jpg, .png, .webp, .avif, .gif or .svg)`);
@@ -226,18 +237,18 @@ function validate(input) {
 
 /* ---------- storage ---------- */
 
-function seedHomepage(db) {
-  if (db.getSetting(KEY, null) !== null) return false;
-  db.setSetting(KEY, defaults());
+async function seedHomepage(db) {
+  if ((await db.getSetting(KEY, null)) !== null) return false;
+  await db.setSetting(KEY, defaults());
   return true;
 }
 
 /* Stored settings, re-validated so the public site always gets a sound shape.
    Missing key: the defaults are written once and returned. */
-function getHomepage(db) {
-  const stored = db.getSetting(KEY, null);
+async function getHomepage(db) {
+  const stored = await db.getSetting(KEY, null);
   if (stored === null) {
-    try { seedHomepage(db); } catch { /* read-only or unmigrated db: still answer */ }
+    try { await seedHomepage(db); } catch { /* read-only or unmigrated db: still answer */ }
     return defaults();
   }
   try {
@@ -248,8 +259,8 @@ function getHomepage(db) {
   }
 }
 
-function saveHomepage(db, clean) {
-  db.setSetting(KEY, clean);
+async function saveHomepage(db, clean) {
+  await db.setSetting(KEY, clean);
   return clean;
 }
 
@@ -263,15 +274,15 @@ const COLLECTION_COLUMNS = 'slug, name, kind, short, hero, cover';
    custom image, headline, text and button label are blanked because they were
    written for the other collection. resolved is null when no collection is
    active. */
-function resolveFeatured(db, home) {
+async function resolveFeatured(db, home) {
   const out = clone(home);
   const f = isObj(out.featured) ? out.featured : {};
   let row = f.collection
-    ? db.stmt(`SELECT ${COLLECTION_COLUMNS} FROM collections WHERE slug = ? AND active = 1`).get(f.collection)
+    ? await db.stmt(`SELECT ${COLLECTION_COLUMNS} FROM collections WHERE slug = ? AND active = 1`).get(f.collection)
     : null;
   let fallback = false;
   if (!row) {
-    row = db.stmt(`SELECT ${COLLECTION_COLUMNS} FROM collections WHERE active = 1 ORDER BY sort, id LIMIT 1`).get();
+    row = await db.stmt(`SELECT ${COLLECTION_COLUMNS} FROM collections WHERE active = 1 ORDER BY sort, id LIMIT 1`).get();
     fallback = Boolean(row);
     if (fallback) Object.assign(f, { image: '', headline: '', text: '', cta_label: '' });
   }
@@ -291,8 +302,8 @@ function resolveFeatured(db, home) {
 }
 
 /* Admin save check: the featured collection must exist and be active. */
-function assertFeaturedCollection(db, slugValue) {
-  const row = db.stmt('SELECT active FROM collections WHERE slug = ?').get(slugValue);
+async function assertFeaturedCollection(db, slugValue) {
+  const row = await db.stmt('SELECT active FROM collections WHERE slug = ?').get(slugValue);
   if (!row) throw bad(`Unknown collection "${slugValue}". Choose one from the list.`);
   if (!row.active) throw bad(`The collection "${slugValue}" is hidden on the site. Make it active first or choose another.`);
 }

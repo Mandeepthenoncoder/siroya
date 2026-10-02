@@ -2,7 +2,7 @@
    Client-side resize (max 2000px long edge, JPEG q0.85, PNG kept when it has
    transparency), upload with per-file progress, a multi-image manager with
    drag and up/down reordering, and a single image field. */
-import { h, fill, icon, iconBtn, imgSrc, toast, ApiError, errorText, ensureAuth, dragSort, moveItem, nextId } from "./lib.js";
+import { h, fill, icon, iconBtn, imgSrc, toast, api, ApiError, errorText, ensureAuth, dragSort, moveItem, nextId } from "./lib.js";
 
 const MAX_EDGE = 2000;
 const JPEG_Q = 0.85;
@@ -70,7 +70,7 @@ export async function prepareImage(file) {
   if (!blob) throw new Error("This photo could not be processed. Please try a different file.");
   if (blob.size > MAX_BYTES) throw new Error("This image is still over 10 MB after resizing. Please use a smaller photo.");
   const base = (file.name || "photo").replace(/\.[^.]+$/, "").replace(/[^\w.-]+/g, "-").slice(0, 80) || "photo";
-  return { dataUrl: await toDataUrl(blob), filename: `${base}.${ext}`, width: w, height: hgt, bytes: blob.size, preview: URL.createObjectURL(blob) };
+  return { dataUrl: await toDataUrl(blob), blob, filename: `${base}.${ext}`, width: w, height: hgt, bytes: blob.size, preview: URL.createObjectURL(blob) };
 }
 
 /* ---------------- Upload ---------------- */
@@ -97,6 +97,70 @@ function postUpload(prep, onProgress, retried = false) {
   });
 }
 
+/* ---------------- Direct upload to media storage (Cloudflare R2) ----------------
+   The server answers POST /api/admin/upload/presign with { method: "PUT",
+   uploadUrl, headers, url } when media lives in R2 (production), or with
+   { method: "LOCAL" } when files are kept on the server's disk (local
+   development); then the classic upload routes are used. */
+let storageMode = ""; // "", "LOCAL" or "PUT" (remembered for this page load)
+
+async function presign(body) {
+  try {
+    return await api("/upload/presign", { method: "POST", body });
+  } catch (e) {
+    if (e instanceof ApiError && (e.status === 404 || e.status === 405)) return { method: "LOCAL" }; // older server
+    throw e;
+  }
+}
+
+function putFile(p, blob, onProgress, holder) {
+  return new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    if (holder) holder.xhr = x;
+    x.open("PUT", p.uploadUrl);
+    for (const [k, v] of Object.entries(p.headers || {})) x.setRequestHeader(k, v);
+    x.upload.onprogress = e => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
+    x.onload = () => {
+      if (x.status >= 200 && x.status < 300) return resolve(p.url);
+      reject(Object.assign(new ApiError(`Upload to storage failed (error ${x.status}). Please try again.`, x.status), { storage: true }));
+    };
+    x.onerror = () => reject(new ApiError("Upload failed. Check your connection and try again. If it keeps failing, the storage CORS settings may need the admin's address.", 0));
+    x.onabort = () => reject(Object.assign(new ApiError("Upload cancelled.", 0), { aborted: true }));
+    x.send(blob);
+  });
+}
+
+/** Uploads a Blob/File straight to media storage. Resolves with the public URL,
+    or with null when the server keeps files locally (use the classic route). */
+export async function directUpload({ kind, blob, type, filename, onProgress = () => {}, holder }) {
+  if (storageMode === "LOCAL") return null;
+  const req = { kind, type: type || blob.type, size: blob.size, filename: filename || "" };
+  let p = await presign(req);
+  storageMode = p?.method === "PUT" ? "PUT" : "LOCAL";
+  if (storageMode === "LOCAL") return null;
+  try {
+    return await putFile(p, blob, onProgress, holder);
+  } catch (e) {
+    // A storage that rejects the signed Content-Length: retry once without it.
+    if (e.storage && e.status === 403 && p.length_signed) {
+      p = await presign({ ...req, unsigned_length: true });
+      if (p?.method === "PUT") return putFile(p, blob, onProgress, holder);
+    }
+    throw e;
+  }
+}
+
+async function uploadPrepared(prep, onProgress) {
+  if (storageMode !== "LOCAL") {
+    const blob = prep.blob || (prep.dataUrl ? await (await fetch(prep.dataUrl)).blob() : null);
+    if (blob) {
+      const url = await directUpload({ kind: "image", blob, type: blob.type, filename: prep.filename, onProgress });
+      if (url) return url;
+    }
+  }
+  return postUpload(prep, onProgress);
+}
+
 /** Runs one file through resize and upload. job.onUpdate is called on every step. */
 export async function runUpload(job) {
   const upd = () => job.onUpdate?.(job);
@@ -107,8 +171,8 @@ export async function runUpload(job) {
     if (!job.prep) job.prep = await prepareImage(job.file);
     job.preview = job.prep.preview;
     job.state = "uploading"; upd();
-    job.url = await postUpload(job.prep, p => { job.pct = p; upd(); });
-    job.state = "done"; job.pct = 1; job.prep.dataUrl = null; upd();
+    job.url = await uploadPrepared(job.prep, p => { job.pct = p; upd(); });
+    job.state = "done"; job.pct = 1; job.prep.dataUrl = null; job.prep.blob = null; upd();
     return job.url;
   } catch (e) {
     job.state = "error"; job.error = e.message || "Upload failed."; upd();

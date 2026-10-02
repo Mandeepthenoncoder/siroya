@@ -61,6 +61,11 @@ function contentType(req) {
 
 /* Reads the raw request body, rejecting with 413 once it passes `limit` bytes. */
 function readBody(req, limit) {
+  if (Buffer.isBuffer(req.bufferedBody)) {
+    // The platform read the stream before us (api/index.js on Vercel).
+    if (req.bufferedBody.length > limit) return Promise.reject(new HttpError(413, 'Request body too large'));
+    return Promise.resolve(req.bufferedBody);
+  }
   return new Promise((resolve, reject) => {
     const declared = Number(req.headers['content-length']);
     if (Number.isFinite(declared) && declared > limit) {
@@ -122,16 +127,22 @@ function parseCookies(req) {
   return out;
 }
 
+/* With TRUST_PROXY the nearest proxy appends the address it saw, so the
+   rightmost X-Forwarded-For entry is the trusted one (entries to its left are
+   whatever the client sent). Vercel overwrites the header with the client IP
+   and also sets X-Real-IP. */
 function clientIp(req, trustProxy) {
   if (trustProxy) {
-    const fwd = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
-    if (fwd) return fwd;
+    const parts = String(req.headers['x-forwarded-for'] || '').split(',').map(p => p.trim()).filter(Boolean);
+    if (parts.length) return parts[parts.length - 1];
+    const real = String(req.headers['x-real-ip'] || '').trim();
+    if (real) return real;
   }
-  return req.socket.remoteAddress || 'unknown';
+  return (req.socket && req.socket.remoteAddress) || 'unknown';
 }
 
 function isHttps(req, trustProxy) {
-  if (req.socket.encrypted) return true;
+  if (req.socket && req.socket.encrypted) return true;
   return Boolean(trustProxy) && String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https';
 }
 

@@ -40,6 +40,9 @@
 
   /* ---------------- Data: the server validates, the page stays defensive ---------------- */
   var MEDIA_RE = /^(?:assets|uploads)\/[A-Za-z0-9._~\-\/]+$/;
+  /* Uploaded media kept on the media storage domain (Cloudflare R2): plain
+     https URL, no query, no credentials, same character set as local paths. */
+  var MEDIA_URL_RE = /^https:\/\/[a-z0-9][a-z0-9.\-]*(?::\d{1,5})?(?:\/[A-Za-z0-9._~\-]+)*\/uploads\/[A-Za-z0-9._~\-\/]+$/i;
   var REL_LINK_RE = /^[a-z0-9][a-z0-9\-_\/.?=&#%]*$/i;
   var HTTPS_RE = /^https:\/\/[a-z0-9][a-z0-9.\-]*(?::\d{1,5})?(?:[\/?#][^\s"'<>\\`]*)?$/i;
 
@@ -48,8 +51,13 @@
     return String(v).replace(/\s+/g, " ").trim().slice(0, max);
   }
   function mediaPath(v, video) {
-    var s = str(v, 300).replace(/^\/+/, "");
-    if (!s || s.indexOf("..") > -1 || !MEDIA_RE.test(s)) return "";
+    var s = str(v, 300);
+    if (/^https:\/\//i.test(s)) {
+      if (s.indexOf("..") > -1 || !MEDIA_URL_RE.test(s)) return "";
+    } else {
+      s = s.replace(/^\/+/, "");
+      if (!s || s.indexOf("..") > -1 || !MEDIA_RE.test(s)) return "";
+    }
     if (video && !/\.(?:mp4|webm)$/i.test(s)) return "";
     return s;
   }

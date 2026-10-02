@@ -134,16 +134,26 @@ function siteHost(req, trustProxy) {
 /* Options (all optional except db): google (a client, for tests),
    trackLimiter / globalLimiter (createLimiter instances), recorder
    (createEventRecorder), maxEventsPerDay, purge (false to skip the start-up
-   and nightly maintenance: retention purge and rollup building).
-   Returns { google, stop, report }. */
+   and nightly maintenance: retention purge and rollup building), timers
+   (false in serverless mode: init() then starts no background maintenance
+   and no nightly timer; a daily cron calls maintain() instead).
+   Registers the routes synchronously and never touches the database while
+   doing so. Returns { google, report, stop, init, maintain }:
+   - init(): async, idempotent (one shared promise; retried after a failure).
+     Creates the analytics tables, turns on secure_delete (file mode), waits
+     for google.ready and, with purge && timers, starts maintenance in the
+     background and schedules it nightly. Await it once before serving.
+   - maintain(): async; retention purge, then every missing rollup of the last
+     ROLLUP_DAYS closed days, one day at a time. Never rejects; resolves
+     { removed, built }.
+   - report(range, t): async traffic report, cached for a minute.
+   - stop(): stops the timer and further maintenance; returns a Promise that
+     settles when a maintenance run in progress has stopped. */
 function registerTraffic(router, {
   db, env = {}, google, trackLimiter, globalLimiter, recorder, maxEventsPerDay = MAX_EVENTS_PER_DAY, purge = true,
+  timers = true,
 } = {}) {
-  // Idempotent; the db.js migration step creates the same tables.
-  ensureAnalyticsSchema(db.raw);
-  // Deleted rows (an old Google key, purged events) are overwritten with zeros
-  // instead of lingering in free pages of the database file.
-  try { db.raw.exec('PRAGMA secure_delete = ON'); } catch { /* older SQLite: best effort */ }
+  const fileMode = db.mode === 'file';
 
   const trustProxy = Boolean(env.TRUST_PROXY);
   const hops = Math.max(1, Math.floor(Number(env.TRUST_PROXY_HOPS || process.env.TRUST_PROXY_HOPS) || 1));
@@ -152,11 +162,15 @@ function registerTraffic(router, {
   const siteLimiter = globalLimiter || createLimiter({ limit: TRACK_GLOBAL_PER_MINUTE, windowMs: 60 * 1000, maxKeys: 10 });
   const events = recorder || createEventRecorder(db, { maxPerDay: maxEventsPerDay });
   /* After a key is replaced or removed: copy the WAL into the database file
-     (where secure_delete has zeroed the old row) and truncate the WAL. */
-  const wipe = () => { db.raw.exec('PRAGMA wal_checkpoint(TRUNCATE)'); };
+     (where secure_delete has zeroed the old row) and truncate the WAL. A
+     remote database has no local file to scrub. */
+  const wipe = async () => {
+    if (!fileMode) return;
+    try { await db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch { /* best effort */ }
+  };
   const client = google || createGoogleClient({ getSetting: db.getSetting, setSetting: db.setSetting, env, wipe });
 
-  /* ---------- nightly maintenance ---------- */
+  /* ---------- maintenance (nightly timer, or a daily cron in serverless mode) ---------- */
 
   let timer = null;
   let stopped = false;
@@ -166,12 +180,16 @@ function registerTraffic(router, {
     warnedMaintenance = true;
     console.error(`Analytics ${what} failed:`, err && err.message ? err.message : err);
   };
-  /* Retention purge, then one rollup per missing closed day, yielding to
-     requests between days (each day costs at most one day of events). */
-  function maintain() {
-    if (stopped) return;
+  /* Retention purge, then one rollup per missing closed day, one day at a
+     time (each day costs at most one day of events). Never rejects. A call
+     while a run is in progress shares that run. */
+  let running = null;
+  async function runMaintenance() {
+    let removed = 0;
+    let built = 0;
+    if (stopped) return { removed, built };
     try {
-      const removed = purgeOld(db);
+      removed = await purgeOld(db);
       if (removed) console.log(`Analytics: removed ${removed} events older than 400 days`);
     } catch (err) {
       warnMaintenance('purge', err);
@@ -179,24 +197,29 @@ function registerTraffic(router, {
     let days = [];
     try {
       const to = addDays(dubaiDay(Date.now()), -1);
-      days = missingDays(db, addDays(to, -(ROLLUP_DAYS - 1)), to);
+      days = await missingDays(db, addDays(to, -(ROLLUP_DAYS - 1)), to);
     } catch (err) {
       warnMaintenance('rollup', err);
     }
-    // Plain (ref'd) immediates: an unref'd one does not wake the event loop, so the
-    // chain would only advance when some other I/O happened. It ends by itself
-    // (at most ROLLUP_DAYS short steps) or at stop().
-    const next = () => {
-      if (stopped || !days.length) return;
+    for (const day of days) {
+      if (stopped) break;
       try {
-        buildDay(db, days.shift());
+        await buildDay(db, day);
+        built++;
       } catch (err) {
         warnMaintenance('rollup', err);
-        return;
+        break;
       }
-      setImmediate(next);
-    };
-    setImmediate(next);
+    }
+    return { removed, built };
+  }
+  function maintain() {
+    if (!running) {
+      running = runMaintenance()
+        .catch(err => { warnMaintenance('maintenance', err); return { removed: 0, built: 0 }; })
+        .finally(() => { running = null; });
+    }
+    return running;
   }
   /* Runs a minute after every Dubai midnight. */
   function schedule() {
@@ -206,9 +229,29 @@ function registerTraffic(router, {
     timer = setTimeout(() => { maintain(); schedule(); }, Math.max(1000, nextDayStart - t + 60 * 1000));
     timer.unref();
   }
-  if (purge) {
-    maintain();
-    schedule();
+
+  /* ---------- start-up ---------- */
+
+  let initPromise = null;
+  function init() {
+    if (!initPromise) {
+      initPromise = (async () => {
+        // Idempotent; the db.js migration step creates the same tables.
+        await ensureAnalyticsSchema(db);
+        // Deleted rows (an old Google key, purged events) are overwritten with zeros
+        // instead of lingering in free pages of the database file.
+        if (fileMode) {
+          try { await db.exec('PRAGMA secure_delete = ON'); } catch { /* older SQLite: best effort */ }
+        }
+        if (client && client.ready) await client.ready;
+        if (purge && timers && !stopped && !timer) {
+          maintain(); // in the background; never rejects
+          schedule();
+        }
+      })();
+      initPromise.catch(() => { initPromise = null; }); // a failed start retries
+    }
+    return initPromise;
   }
 
   /* ---------- public beacon ---------- */
@@ -226,11 +269,11 @@ function registerTraffic(router, {
     return siteLimiter.hit('all').ok;
   }
 
-  router.post('/api/track', ({ req, res, body }) => {
+  router.post('/api/track', async ({ req, res, body }) => {
     // Always 204, even when the event is dropped (privacy signal, other origin,
-    // rate or daily limit, bot, invalid).
+    // rate or daily limit, bot, invalid) or the database fails.
     try {
-      if (accept(req)) events.record(body, { ua: req.headers['user-agent'], host: siteHost(req, trustProxy) });
+      if (accept(req)) await events.record(body, { ua: req.headers['user-agent'], host: siteHost(req, trustProxy) });
     } catch (err) {
       if (!warnedRecord) {
         warnedRecord = true;
@@ -244,45 +287,50 @@ function registerTraffic(router, {
   /* ---------- first-party report ---------- */
 
   /* Reports read daily rollups; today's live part is cached for a minute.
-     The computation is synchronous, so concurrent requests are served one
-     after another and all but the first get the cached result. */
-  const reports = new Map(); // range -> { at, day, data }
-  function report(range, t = Date.now()) {
+     The promise is cached, so concurrent requests share one computation; a
+     failed one is dropped from the cache. */
+  const reports = new Map(); // range -> { at, day, promise }
+  async function report(range, t = Date.now()) {
     const day = dubaiDay(t);
     const hit = reports.get(range);
-    if (hit && hit.day === day && t - hit.at >= 0 && t - hit.at < REPORT_TTL_MS) return hit.data;
-    const data = trafficReport(db, range, { now: t });
-    reports.set(range, { at: t, day, data });
-    return data;
+    if (hit && hit.day === day && t - hit.at >= 0 && t - hit.at < REPORT_TTL_MS) return hit.promise;
+    const promise = trafficReport(db, range, { now: t });
+    const entry = { at: t, day, promise };
+    reports.set(range, entry);
+    promise.catch(() => { if (reports.get(range) === entry) reports.delete(range); });
+    return promise;
   }
 
-  router.get('/api/admin/traffic', ({ query }) => report(rangeParam(query, RANGES, 7)), { auth: true });
+  router.get('/api/admin/traffic', async ({ query }) => report(rangeParam(query, RANGES, 7)), { auth: true });
 
   /* ---------- Google connection ---------- */
 
-  router.get('/api/admin/google', () => client.status(), { auth: true });
+  router.get('/api/admin/google', async () => client.status(), { auth: true });
 
-  router.put('/api/admin/google', ({ body }) => client.save(body), { auth: true, limit: GOOGLE_BODY_LIMIT });
+  router.put('/api/admin/google', async ({ body }) => client.save(body), { auth: true, limit: GOOGLE_BODY_LIMIT });
 
-  router.delete('/api/admin/google', () => client.disconnect(), { auth: true });
+  router.delete('/api/admin/google', async () => client.disconnect(), { auth: true });
 
-  router.post('/api/admin/google/test', () => client.test(), { auth: true });
+  router.post('/api/admin/google/test', async () => client.test(), { auth: true });
 
-  router.get('/api/admin/search', ({ query }) => client.searchReport(
+  router.get('/api/admin/search', async ({ query }) => client.searchReport(
     rangeParam(query, SEARCH_RANGES, 28), { refresh: isRefresh(query) },
   ), { auth: true });
 
-  router.get('/api/admin/analytics', ({ query }) => client.analyticsReport(
+  router.get('/api/admin/analytics', async ({ query }) => client.analyticsReport(
     rangeParam(query, ANALYTICS_RANGES, 30), { refresh: isRefresh(query) },
   ), { auth: true });
 
   return {
     google: client,
     report,
+    init,
+    maintain,
     stop() {
       stopped = true;
       if (timer) clearTimeout(timer);
       timer = null;
+      return running ? running.then(() => {}) : Promise.resolve();
     },
   };
 }

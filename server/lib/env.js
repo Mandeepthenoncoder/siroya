@@ -1,6 +1,10 @@
 'use strict';
 /* Loads server/.env (simple KEY=VALUE, no dependency). Creates it on first run
-   with a random ADMIN_PASSWORD and SESSION_SECRET. Values are never logged. */
+   with a random ADMIN_PASSWORD and SESSION_SECRET. Values are never logged.
+   process.env always wins over the file. On Vercel (VERCEL is set) the file
+   system is read-only, so nothing is ever written, and in production
+   (Vercel or NODE_ENV=production) ADMIN_PASSWORD and SESSION_SECRET must be
+   set in the environment: start-up fails with a clear message otherwise. */
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -29,7 +33,21 @@ function randomPassword() {
   return crypto.randomBytes(18).toString('base64url');
 }
 
+const isServerless = () => Boolean(process.env.VERCEL);
+const isProduction = () => isServerless() || process.env.NODE_ENV === 'production';
+
 function loadEnv(file = ENV_FILE) {
+  if (isProduction()) {
+    const missing = ['ADMIN_PASSWORD', 'SESSION_SECRET'].filter(k => !process.env[k]);
+    if (missing.length) {
+      throw new Error(`Missing required environment variable${missing.length > 1 ? 's' : ''} ${missing.join(' and ')}. `
+        + 'Set them in the Vercel project settings (Settings > Environment Variables) and redeploy.');
+    }
+  }
+  if (isServerless()) {
+    const get = k => (process.env[k] !== undefined && process.env[k] !== '' ? process.env[k] : undefined);
+    return buildEnv(get);
+  }
   const existed = fs.existsSync(file);
   const text = existed ? fs.readFileSync(file, 'utf8') : '';
   const fromFile = parseEnv(text);
@@ -64,19 +82,24 @@ function loadEnv(file = ENV_FILE) {
     console.log(wrotePassword ? 'Admin password written to server/.env' : 'Session secret written to server/.env');
   }
 
-  const get = k => fromProc(k) ?? fromFile[k];
+  return buildEnv(k => fromProc(k) ?? fromFile[k]);
+}
+
+function buildEnv(get) {
   const env = {
     PORT: get('PORT'),
     HOST: get('HOST'),
     ADMIN_PASSWORD: get('ADMIN_PASSWORD') || '',
     SESSION_SECRET: get('SESSION_SECRET') || '',
-    TRUST_PROXY: /^(1|true|yes)$/i.test(get('TRUST_PROXY') || ''),
+    // Vercel always sits in front of the function and sets X-Forwarded-For itself.
+    TRUST_PROXY: /^(1|true|yes)$/i.test(get('TRUST_PROXY') || (isServerless() ? '1' : '')),
     TRUST_PROXY_HOPS: get('TRUST_PROXY_HOPS'),
     PUBLIC_ORIGIN: get('PUBLIC_ORIGIN'),
+    CRON_SECRET: get('CRON_SECRET') || '',
   };
-  if (env.ADMIN_PASSWORD.length < 12) console.warn('Warning: ADMIN_PASSWORD in server/.env is short. Use 12 or more characters.');
-  if (env.SESSION_SECRET.length < 32) console.warn('Warning: SESSION_SECRET in server/.env is short. Use 32 or more random characters.');
+  if (env.ADMIN_PASSWORD.length < 12) console.warn('Warning: ADMIN_PASSWORD is short. Use 12 or more characters.');
+  if (env.SESSION_SECRET.length < 32) console.warn('Warning: SESSION_SECRET is short. Use 32 or more random characters.');
   return env;
 }
 
-module.exports = { loadEnv, parseEnv, ENV_FILE, SERVER_DIR };
+module.exports = { loadEnv, parseEnv, ENV_FILE, SERVER_DIR, isServerless, isProduction };
